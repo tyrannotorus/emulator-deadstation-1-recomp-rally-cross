@@ -8,15 +8,13 @@
     }
   ],
   "features": [
-    "60 frames a second in a one-player race, all of it the game, at its true speed.",
-    "Resolution: 320 x 240, 640 x 480 or 1024 x 768, set in Options.",
-    "Medium High: a higher camera between Medium and Far.",
-    "HUD: turn each part of it off, in the pause menu.",
-    "Shadows: each car's own shape cast along the sun onto the ground.",
-    "Conditions: a season, a time of day and the weather, in the game's own menus.",
-    "The Lost Mines' tunnel: its flames flicker orange on the rock and the cars.",
-    "A native renderer: a race's frame takes no PlayStation packets.",
-    "Controls: every button can be remapped, set in Options."
+    "60 fps races",
+    "Resolution up to 1024x768",
+    "Medium High camera",
+    "HUD toggles",
+    "Car shadows",
+    "Seasons, time of day and weather",
+    "Remappable controls"
   ],
   "changelog": [
     "Same pace as the emulator: 59.85 Hz.",
