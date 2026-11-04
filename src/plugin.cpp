@@ -21,6 +21,10 @@ extern void (*psx_gpu_list_node_hook)(uint32_t addr);	// patch 0024
 #include "../sdk/brick/psx_sdk.h"
 #include "../sdk/brick/replay.h"
 #include "conditions.h"
+#include "world_edge_lit_frag.h"
+#include "world_lit_frag.h"
+#include "world_lit_vert.h"
+#include "world_vert.h"
 
 #include <algorithm>
 #include <chrono>
@@ -826,7 +830,6 @@ struct Eye
 		return true;
 	}
 } eye;
-std::vector<DeadstationTriangle> beamTriangles;
 std::vector<DeadstationGlow> glowsNow, veilsNow, fallingNow;
 uint32_t weatherClock = 0;	// 60ths of a second
 uint32_t blanksSeen = 0;
@@ -889,31 +892,6 @@ void prepareLights()
 		c.z0 = std::min(c.z, ez) - BeamSide, c.z1 = std::max(c.z, ez) + BeamSide;
 	}
 }
-// a polygon the track's walk just made, in any car's beam: again as a beam over it
-int8_t beamLayer = 0;
-void addBeamTriangle(const CarLight& c, const float (*world)[3], const float *sx, const float *sy, const float *z, const uint16_t *uv, uint16_t page, uint16_t clut, const int *corners)
-{
-	DeadstationTriangle t {};
-	float alongLo = 1e9f, alongHi = -1e9f, acrossLo = 1e9f, acrossHi = -1e9f;
-	for (int j = 0; j < 3; j++)
-	{
-		const int k = corners[j];
-		const float dx = world[k][0] - c.x, dy = world[k][1] - c.y, dz = world[k][2] - c.z;
-		const float along = dx * c.fx + dz * c.fz, across = dx * c.rx + dz * c.rz;
-		alongLo = std::min(alongLo, along), alongHi = std::max(alongHi, along);
-		acrossLo = std::min(acrossLo, across), acrossHi = std::max(acrossHi, across);
-		const float height = dy - c.fy * along;		// from where the beam runs
-		const float k2 = std::clamp(1.f - std::fabs(height) / 700.f, 0.f, 1.f) * look.beam;
-		const uint32_t a = (uint32_t)std::clamp((along + 400.f) / 3200.f * 255.f, 0.f, 255.f), b = (uint32_t)std::clamp((across + 1600.f) / 3200.f * 255.f, 0.f, 255.f);
-		t.rgb[j] = a | b << 8 | (uint32_t)(k2 * 255.f) << 16;
-		t.x[j] = sx[k], t.y[j] = sy[k], t.z[j] = std::min(z[k], 65535.f), t.uv[j] = uv[k];
-	}
-	if (alongHi < 0 || alongLo > BeamReach || acrossLo > BeamSide || acrossHi < -BeamSide)
-		return;
-	t.page = page, t.clut = clut, t.raw = 0, t.semi = DeadstationBeam, t.layer = beamLayer;
-	beamTriangles.push_back(t);
-}
-
 // the night sky, behind everything (nothing's depth is yet written, so it needs none but what lets it follow the camera in-between)
 void addStars()
 {
@@ -1304,12 +1282,6 @@ void emitCarsAndLight()
 	deadstation_replay_object(0);
 	if (eye.valid && carLightCount > 0)
 	{
-		if (!beamTriangles.empty())
-		{
-			placedPolygons(beamTriangles);
-			deadstation_triangles(beamTriangles.data(), beamTriangles.size());
-			beamTriangles.clear();
-		}
 		glowsNow.clear();
 		if (costStep < 2 && !without("cones"))
 			addCones();
@@ -1810,7 +1782,9 @@ int onGameSky(CPUState *, uint32_t)
 // pool of light is a few pixels, its lamps (addLamps) what's seen of it.
 constexpr int MostBeams = 2;
 // The beams for a frame: the nearest car's and the next, each as what the shaders want and the screen it can reach
-DeadstationWorldBeam beamsNow[MostBeams];
+// a beam: the world to its axes, in world units, each a linear form: x, y, z, constant (shaders/world.vert)
+struct WorldBeam { float along[4], across[4], height[4], strength; };
+WorldBeam beamsNow[MostBeams];
 int beamsCount = 0;
 void prepareWorldBeams()
 {
@@ -1849,6 +1823,17 @@ void prepareWorldBeams()
 			look.beam,
 		};
 	}
+}
+// The headlights in the world's shaders (shaders/world*): the beams as they read them. Strengths: at the corners, the near beam and the other; at the pixels of what's solid, the near one. Then each
+// beam's axes. What's solid has the near beam at its pixels, in the one drawing of it; what's cut out and solid quads at their corners.
+void worldBeams()
+{
+	const WorldBeam none {};
+	const WorldBeam& near = beamsCount > 0 ? beamsNow[0] : none, &other = beamsCount > 1 ? beamsNow[1] : none;
+	float solid[DeadstationWorldNumbers] = { 0, other.strength, near.strength, 0 }, rest[DeadstationWorldNumbers] = { near.strength, other.strength, 0, 0 };
+	std::memcpy(solid + 4, near.along, sizeof(float) * 12), std::memcpy(solid + 16, other.along, sizeof(float) * 12);
+	std::memcpy(rest + 4, near.along, sizeof(float) * 12), std::memcpy(rest + 16, other.along, sizeof(float) * 12);
+	deadstation_world_numbers(solid, rest, near.strength > 0 ? 1 : 0);
 }
 void forgetTrackCells() { trackCellsKnown = false; skyKnown = false; }
 // a lamp's colour for now, by its kind (+1), as the game's handler does each drawing
@@ -2028,7 +2013,6 @@ int onTrackDraw(CPUState *cpu, uint32_t)
 	const uint32_t bufferEnd = cursor + 0x178CC;
 	if (trackSorted || trackActive || fullDetail)
 	{
-		beamTriangles.clear();
 		for (int id = 0; id < 8; id++)
 			carSolid[id].clear(), carBlended[id].clear(), carDarkens[id].clear(), carDepths[id].clear();
 		trackTriangles.clear();
@@ -2359,19 +2343,6 @@ int onTrackDraw(CPUState *cpu, uint32_t)
 					trackFarthest = std::max(trackFarthest, entry);
 				// lit by a beam (only what's solid: a beam on a blended polygon would show what's behind it twice)
 				if (beams != 0 && (kind & 2) == 0)
-				{
-					const float sx[4] = { q[0].sx, q[1].sx, q[2].sx, q[3].sx }, sy[4] = { q[0].sy, q[1].sy, q[2].sy, q[3].sy }, zs[4] = { q[0].z, q[1].z, q[2].z, q[3].z };
-					const uint16_t uvs[4] = { q[0].uv, q[1].uv, q[2].uv, q[3].uv };
-					static constexpr int First[3] = { 0, 1, 2 }, Second[3] = { 1, 3, 2 };
-					beamLayer = layer;
-					for (int l = 0; l < carLightCount; l++)
-						if ((beams >> l) & 1)
-						{
-							addBeamTriangle(carLights[l], world, sx, sy, zs, uvs, page, clut, First);
-							if (quad)
-								addBeamTriangle(carLights[l], world, sx, sy, zs, uvs, page, clut, Second);
-						}
-				}
 				drawn++;
 			}
 			}
@@ -4009,7 +3980,7 @@ void emitFrame()
 	if (tintWanted)
 		setTint(true);
 	prepareWorldBeams();
-	deadstation_world_lights(beamsCount > 0 ? &beamsNow[0] : nullptr, beamsCount > 1 ? &beamsNow[1] : nullptr);
+	worldBeams();
 	// What's solid, then the sky where nothing is, then what's cut out, with the sky to show through its holes
 	deadstation_world_draw(&trackCamera, trackVisible.data(), trackVisible.size(), 1);
 	setTint(false);
@@ -4044,7 +4015,7 @@ void emitFrame()
 	setTint(false);
 	emitEffects();
 	deadstation_fog(0, 0, 0, 0, 0, 0);
-	deadstation_world_lights(nullptr, nullptr);
+	deadstation_world_numbers(nullptr, nullptr, 0);
 	trackActive = false;
 	frameDrawn = true;
 }
@@ -4582,6 +4553,13 @@ struct Registration
 
 // Resolution: the game's frames drawn by the presenter's Vulkan at this size, the display scaling it to the panel; VRAM at twice
 // the PlayStation's but at 320 x 240. (A test's DEADSTATION_RESOLUTION comes first.)
+// The headlights in the world's shaders: this game's own, in place of the SDK's plain ones
+extern "C" void deadstation_module_start(void)
+{
+	const DeadstationWorldShaders shaders = { world_vert, sizeof(world_vert), world_lit_vert, sizeof(world_lit_vert), world_lit_frag, sizeof(world_lit_frag), world_edge_lit_frag, sizeof(world_edge_lit_frag) };
+	deadstation_world_shaders(&shaders);
+}
+
 extern "C" void deadstation_module_setting(const char *key, const char *value)
 {
 	if (std::strcmp(key, "scale") != 0)

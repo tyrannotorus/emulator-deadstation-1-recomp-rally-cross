@@ -38,6 +38,11 @@ target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin.cpp"
 # the Brick: the presenter, no desktop OpenGL (sdk/brick/brick.cmake)
 include("${CMAKE_CURRENT_SOURCE_DIR}/sdk/brick/brick.cmake")
 
+# the headlights: this game's own world shaders (src/shaders)
+if(COMMAND deadstation_module_shaders)
+    deadstation_module_shaders("${CMAKE_CURRENT_SOURCE_DIR}/src/shaders" world.vert world_lit.vert world_lit.frag world_edge_lit.frag)
+endif()
+
 foreach(_PSX_RUNTIME_CONFIG game.toml game_options.toml)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_PSX_RUNTIME_CONFIG}")
         add_custom_command(TARGET psx-runtime POST_BUILD
