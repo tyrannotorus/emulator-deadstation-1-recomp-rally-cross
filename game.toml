@@ -1,0 +1,60 @@
+# Autofilled by tools/new_project_layout/probe_disc.py from your legal dump.
+# Review before shipping. Runtime quirks / overlay seeds still need hand work.
+
+[game]
+name = "Rally Cross"
+id = "SCUS-94308"
+players = 4
+exe = "disc/SCUS_943.08"
+disc = "disc/rallycross.cue"
+load_address = "0x80010000"
+entry_pc = "0x80011700"
+text_size = "0x00051000"
+stack_base = "0x801FFFF0"
+
+# Digests are for data Track 01 (first BINARY FILE / TRACK 01).
+[prepare_disc]
+out_dir = "disc"
+bin_name = "rallycross (Track 1).bin"
+cue_name = "rallycross.cue"
+boot_exe = "SCUS_943.08"
+known_sizes = [181503840]
+known_md5 = [
+  "7f0399f2d0026e7af26f45d1659f66f2",
+]
+known_sha1 = [
+  "93a69c03269e6446d8e7d891c9eb8425cf508308",
+]
+known_crc32 = [
+  "710716ab",
+]
+
+[recompiler]
+seeds = "seeds/ghidra_funcs.txt"
+bios_config = "sdk/psxrecomp/bios/SCPH1001.toml"
+# the module's plugin (src/plugin.cpp) hooks these functions' entries
+# and the PlayStation SDK's calls done natively (sdk/brick/psx_sdk.h): DrawOTag, LoadImage, MoveImage
+mod_function_entry_funcs = ["0x8003BB40", "0x8002BC14", "0x800489F8", "0x800486BC", "0x80048784", "0x800529C4", "0x80012FF8", "0x800117E4", "0x8002AF20", "0x8002C8BC", "0x8004B9EC", "0x80012C74", "0x8003F48C", "0x80030ACC", "0x8003F7AC", "0x80040184", "0x8003B3EC", "0x80023A68", "0x80043914", "0x8002CBE8", "0x8002ECD0", "0x8002D3F0", "0x8002D314", "0x80038D70", "0x800373C0", "0x8002DCD4", "0x8004BB7C", "0x800483F8", "0x8004663C", "0x80046034", "0x8002C378", "0x80014534", "0x8002C194", "0x8003C4A0", "0x8003F4DC", "0x8003F564", "0x8004B0BC", "0x8004B0E8", "0x8003CA54"]
+out_dir = "generated"
+strict = true
+
+[runtime]
+window_title = "Rally Cross recomp module"
+memcard_dir = "saves"
+overlay_cache = true
+
+[video]
+renderer = "opengl"
+aspect_ratio = "4:3"
+
+[controller]
+default_mode = "digital"
+# the first gamepad (the Brick's): a build without PSXRecomp's debug tools defaults player 1 to the keyboard
+p1_device = "auto"
+
+# Online mount gate: digests + track count + optional TOC fingerprint
+# (see docs/NETPLAY.md).
+[netplay]
+require_cue = true
+required_tracks = 7
+required_disc_fp = "72eb4b01fa7dfecceafe8662488c208d26041ed8a96d5b30150e2678705213c2"

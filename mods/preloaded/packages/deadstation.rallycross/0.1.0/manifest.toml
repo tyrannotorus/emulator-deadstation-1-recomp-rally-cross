@@ -1,0 +1,21 @@
+format_version = 7
+id = "deadstation.rallycross"
+version = "0.1.0"
+name = "Deadstation for Rally Cross"
+author = "Deadstation"
+description = "Deadstation's additions to the Rally Cross recomp module."
+license = "PolyForm-Noncommercial-1.0.0"
+resolver = "declarative"
+
+[[target]]
+game_id = "SCUS-94308"
+
+[[feature]]
+id = "enhancements"
+name = "Deadstation enhancements"
+description = "Deadstation's hooks in the game (its enhancements build on them)."
+default_enabled = true
+
+[[plugin]]
+feature = "enhancements"
+id = "deadstation.rallycross"

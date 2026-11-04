@@ -1,0 +1,46 @@
+{
+  "format_version": 1,
+  "game": {
+    "name": "rallycross",
+    "id": "SCUS-94308",
+    "boot_exe": "SCUS_943.08"
+  },
+  "marketing": {
+    "description": "",
+    "publisher": "",
+    "year": "",
+    "region": "",
+    "players": 4
+  },
+  "rom_identity": {
+    "cue_name": "rallycross.cue",
+    "bin_name": "rallycross (Track 1).bin",
+    "track_counts": [
+      7
+    ],
+    "require_cue": true,
+    "data_track": {
+      "size": 181503840,
+      "md5": "7f0399f2d0026e7af26f45d1659f66f2",
+      "sha1": "93a69c03269e6446d8e7d891c9eb8425cf508308",
+      "crc32": "710716ab"
+    },
+    "disc_fp": "72eb4b01fa7dfecceafe8662488c208d26041ed8a96d5b30150e2678705213c2"
+  },
+  "exe": {
+    "load_address": "0x80010000",
+    "entry_pc": "0x80011700",
+    "text_size": "0x00051000",
+    "stack_base": "0x801FFFF0"
+  },
+  "seeds": {
+    "count": 468,
+    "source": "boot_exe_jal"
+  },
+  "warnings": [],
+  "notes": [
+    "entry_pc/load_address/text_size/stack_base taken from PS-X EXE header.",
+    "seeds are first-pass boot-EXE JAL targets (+ entry); expect to grow as overlays / runtime paths are discovered.",
+    "required_disc_fp is psxrecomp-toc-v1 (matches runtime DiscIdentity)."
+  ]
+}

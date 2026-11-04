@@ -1,0 +1,22 @@
+{
+  "description": "Rally Cross (989 Studios, 1997), recompiled for the TrimUI Brick.",
+  "formats": [
+    {
+      "format": "CHD",
+      "region": "USA",
+      "sha1": "62c54f5e1f989126a1f034c39646a0336c6c8321"
+    }
+  ],
+  "features": [
+    "60 frames a second in a one-player race, all of it the game, at its true speed.",
+    "Resolution: 320 x 240, 640 x 480 or 1024 x 768, set in Options.",
+    "Shadows: each car's own shape cast along the sun onto the ground.",
+    "Conditions: a season, a time of day and the weather, in the game's own menus.",
+    "A native renderer: a race's frame takes no PlayStation packets.",
+    "Controls: every button can be remapped, set in Options."
+  ],
+  "changelog": [
+    "First release."
+  ],
+  "repo": "https://github.com/tyrannotorus/emulator-deadstation-1-recomp-rally-cross"
+}
