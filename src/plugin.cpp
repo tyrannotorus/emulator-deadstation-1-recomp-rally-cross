@@ -3330,7 +3330,7 @@ int onCameraMove(CPUState *cpu, uint32_t)
 // here, HUD, after CAMERA: drawn in its place with those below it a row down, and the cursor on it held on CAMERA with a word here, the buttons seen first. Its own page takes the main page's
 // place, the game's rows not drawn and no button reaching them but Start.
 constexpr uint32_t PausePadsBack = 0x80023DD0, PauseTrackBack = 0x80024E48, MainRowBack = 0x80024074, MainPanelBack = 0x80024044, ConfirmPanelBack = 0x8002465C;
-constexpr uint32_t PadHeld = PadStates, PadPressed = PadStates + 8, PadReleased = PadStates + 10, MenuSound = 0x8003FB30;
+constexpr uint32_t PadPressed = PadStates + 8, PadReleased = PadStates + 10, MenuSound = 0x8003FB30;
 constexpr uint32_t PadStart = 0x800, PadCross = 0x40, PadCircle = 0x20, PadTriangle = 0x10, PadLeft = 0x8000, PadRight = 0x2000;
 constexpr int MainFirstRow = 0x44, MainHighlightTop = 67, MainPanelBottom = 0x9C, MainRows = 8, MainHudRow = 2;
 constexpr int HudLeft = 100, HudRight = 220, HudLabelX = 109, HudValueX = 180;
@@ -3381,9 +3381,9 @@ void pauseButtons(CPUState *cpu, uint32_t ra)
 			saveHud();
 			beep = true;
 		}
-		// (nothing but Start for the game)
+		// (no press but Start for the game. What's held stays: the pad's next read finds what's newly pressed by it, and with it cleared a button held would be pressed again every frame.
+		// The game's only use of a held button on this page is its sliders, and the cursor here is on neither)
 		psx_mod_write_half(PadPressed, (uint16_t)(pressed & PadStart));
-		psx_mod_write_half(PadHeld, (uint16_t)(psx_mod_read_half(PadHeld) & PadStart));
 		psx_mod_write_half(PadReleased, 0);
 		if (beep)
 			menuBeep(cpu, ra);
