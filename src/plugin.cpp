@@ -27,6 +27,7 @@ extern void (*psx_gpu_list_node_hook)(uint32_t addr);	// patch 0024
 #include "world_vert.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -524,16 +525,12 @@ constexpr const char *CameraFile = "saves/camera.cfg";
 //
 // The HUD's records say where they are: a part is what lies in its place on the 320 x 240 screen, whichever of the game's routines made it. In the middle of the screen, what's announced
 // and the pause menu lie in none of them, and stay.
-enum HudPart { HudTach, HudGear, HudSpeed, HudLap, HudPosition, HudRaceTime, HudLapTimes, HudBestLap, HudMap, HudParts };
+enum HudPart { HudGauges, HudLap, HudTimes, HudBestLap, HudMap, HudParts };
 struct HudArea { const char *name; int16_t x0, y0, x1, y1; };
 constexpr HudArea HudAreas[HudParts] = {
-	{ "TACH", 4, 172, 76, 238 },
-	{ "GEAR", 76, 190, 97, 209 },
-	{ "SPEED", 62, 209, 128, 238 },
-	{ "LAP", 6, 14, 96, 33 },
-	{ "POSITION", 6, 33, 60, 50 },
-	{ "RACE TIME", 6, 50, 92, 68 },
-	{ "LAP TIMES", 6, 68, 72, 122 },
+	{ "TACH", 4, 172, 128, 238 },			// the tach, the gear and the speed
+	{ "LAP", 6, 14, 110, 50 },				// the lap and the position
+	{ "TIMES", 6, 50, 110, 122 },			// the race's time and the laps'
 	{ "BEST LAP", 214, 200, 306, 238 },
 	{ "MAP", 226, 18, 310, 104 },
 };
@@ -1552,15 +1549,15 @@ void learnSurfaces(const std::vector<DeadstationWorldTriangle>& mesh, CPUState *
 
 // ---- The Lost Mines' lamps give light ----
 //
-// The game's lamps there are flat glows with no light of their own. Here each flickers orange, on what's near it: the polygons of the track round it, drawn again in its light, added, each with its
-// own texture, so the rock's lit and not painted, and how much at each corner by how far and how it faces. Worked out once for a race. What faces away from a lamp (the hillside over a tunnel) gets
-// none of it. A car near one takes on the light as a whole.
+// The game's flames in the rock tunnel (its lamps of kind 1, the ones that flicker) are flat glows with no light of their own. Here each flickers orange, on what's near it: the polygons of the track
+// round it, drawn once more in the light of all the lamps on them, added, each with its own texture, so the rock's lit and not painted, and how much at each corner by how far and how it faces. Worked
+// out once for a race. What faces away from a lamp (the hillside over a tunnel) gets none of it. A car near one takes on the light as a whole.
 struct LampCorners { uint32_t triangle; uint8_t w[3]; };
 struct LampLight { uint32_t object; float x, y, z, flame, aim; std::vector<LampCorners> lit; };
 std::vector<LampLight> lampLights;
 const std::vector<DeadstationWorldTriangle> *lampMesh = nullptr;
-constexpr float LampReach = 1500.f, LampFlameR = 230.f, LampFlameG = 104.f, LampFlameB = 26.f;
-constexpr int LampsLit = 6;
+constexpr float LampReach = 2300.f, LampFlameR = 150.f, LampFlameG = 65.f, LampFlameB = 11.f;
+constexpr int LampKindFlame = 1;
 void learnLampLight(const std::vector<DeadstationWorldTriangle>& mesh, uint32_t index)
 {
 	lampLights.clear();
@@ -1574,10 +1571,9 @@ void learnLampLight(const std::vector<DeadstationWorldTriangle>& mesh, uint32_t 
 			continue;
 		const uint32_t tile = index + (uint32_t)tileIndex * 88 + 8364;
 		for (uint32_t object = ramWord(tile + 68); object != 0; object = ramWord(object + 12))
-			if (ramWord(ObjectHandlers + (uint32_t)ramByte(object) * 4) == TrackLamp)
+			if (ramWord(ObjectHandlers + (uint32_t)ramByte(object) * 4) == TrackLamp && ramByte(object + 1) == LampKindFlame)
 			{
 				lampLights.push_back({ object, (float)ramHalf(object + 4), (float)ramHalf(object + 6), (float)ramHalf(object + 8), 1.f, 1.f, {} });
-				std::fprintf(stderr, "deadstation rallycross: a lamp at %d %d %d, kind %u, colour %06X\n", ramHalf(object + 4), ramHalf(object + 6), ramHalf(object + 8), ramByte(object + 1), ramWord(object + 20) & 0xFFFFFF);
 			}
 	}
 	// (which way a polygon's corners go round for its face: what's most of a track is ground, and it faces up, y's negative)
@@ -1607,7 +1603,7 @@ void learnLampLight(const std::vector<DeadstationWorldTriangle>& mesh, uint32_t 
 				if (faces < -0.05f)
 					continue;
 				const float left = 1.f - far / LampReach;
-				corners.w[j] = (uint8_t)std::clamp(left * left * (0.35f + 0.65f * std::max(faces, 0.f)) * 255.f, 0.f, 255.f);
+				corners.w[j] = (uint8_t)std::clamp(left * left * std::sqrt(left) * (0.3f + 0.7f * std::max(faces, 0.f)) * 255.f, 0.f, 255.f);
 				any = any || corners.w[j] != 0;
 			}
 			if (any)
@@ -1844,18 +1840,14 @@ inline uint32_t lampDice()
 	return lampRandom >> 8;
 }
 // the lamps near the eye, by their flames of the moment
+std::vector<DeadstationWorldQuad> lampQuads;
 void addLampLight()
 {
+	lampQuads.clear();
 	if (lampLights.empty() || lampMesh == nullptr)
 		return;
-	const bool moving = tickPass && ramByte(AnimationsHeld) == 0;
-	int nearest[LampsLit];
-	float nearestAt[LampsLit];
-	int count = 0;
-	for (int i = 0; i < (int)lampLights.size(); i++)
-	{
-		LampLight& lamp = lampLights[i];
-		if (moving)
+	if (tickPass && ramByte(AnimationsHeld) == 0)
+		for (LampLight& lamp : lampLights)
 		{
 			// (a flame: restless, now and then all but out)
 			const uint32_t dice = lampDice();
@@ -1863,45 +1855,62 @@ void addLampLight()
 				lamp.aim = (dice & 0x1F00) == 0 ? 0.3f : 0.62f + 0.38f * (float)((dice >> 4) & 255) / 255.f;
 			lamp.flame += (lamp.aim - lamp.flame) * 0.4f;
 		}
-		const float dx = lamp.x - eye.x, dy = lamp.y - eye.y, dz = lamp.z - eye.z, at = dx * dx + dy * dy + dz * dz;
-		if (at > 9000.f * 9000.f)
-			continue;
-		if (count == LampsLit && nearestAt[LampsLit - 1] <= at)
-			continue;
-		int place = count < LampsLit ? count++ : LampsLit - 1;
-		while (place > 0 && nearestAt[place - 1] > at)
-		{
-			nearest[place] = nearest[place - 1], nearestAt[place] = nearestAt[place - 1];
-			place--;
-		}
-		nearest[place] = i, nearestAt[place] = at;
-	}
-	const float r31 = trackCamera.r[6], r32 = trackCamera.r[7], r33 = trackCamera.r[8], tz = trackCamera.t[2];
-	for (int n = 0; n < count; n++)
+	// (every lamp, on what's in view: the same cells as the mesh is drawn)
+	static std::vector<uint8_t> cellInView;
+	cellInView.assign(trackCells.size(), 0);
+	for (const uint16_t cell : trackVisible)
+		if (cell < cellInView.size())
+			cellInView[cell] = 1;
+	// each polygon once, by the sum of the lamps on it
+	static std::vector<uint32_t> seen;
+	static std::vector<std::array<float, 3>> levels;
+	static std::vector<uint32_t> touched;
+	static uint32_t stamp = 0;
+	if (seen.size() != lampMesh->size())
+		seen.assign(lampMesh->size(), 0), levels.resize(lampMesh->size()), stamp = 0;
+	stamp++;
+	touched.clear();
+	for (const LampLight& lamp : lampLights)
 	{
-		const LampLight& lamp = lampLights[nearest[n]];
 		for (const LampCorners& corners : lamp.lit)
 		{
-			const DeadstationWorldTriangle& t = (*lampMesh)[corners.triangle];
-			DeadstationWorldQuad quad {};
-			float depth = 0;
-			for (int j = 0; j < 4; j++)
-			{
-				const int k = j == 3 ? 2 : j;
-				quad.p[j][0] = t.p[k][0], quad.p[j][1] = t.p[k][1], quad.p[j][2] = t.p[k][2];
-				quad.uv[j][0] = t.uv[k][0], quad.uv[j][1] = t.uv[k][1];
-				const float w = (float)corners.w[k] / 255.f * lamp.flame;
-				quad.rgb[j][0] = (uint8_t)(LampFlameR * w), quad.rgb[j][1] = (uint8_t)(LampFlameG * w), quad.rgb[j][2] = (uint8_t)(LampFlameB * w);
-				if (j < 3)
-					depth += r31 * t.p[k][0] + r32 * t.p[k][1] + r33 * t.p[k][2] + tz;
-			}
-			if (depth < -3.f * 512.f)
+			if (cellInView[(*lampMesh)[corners.triangle].cell] == 0)
 				continue;
-			quad.page = t.page, quad.clut = t.clut, quad.raw = 0, quad.semi = 1 + 1;	// (added: the PlayStation's mode 1)
-			quad.layer = (int8_t)(t.layer - 1);
-			trackQuadsBlended.push_back(quad);
-			trackQuadsBlendedZ.push_back(depth / 3.f);
+			if (seen[corners.triangle] != stamp)
+			{
+				seen[corners.triangle] = stamp;
+				levels[corners.triangle] = { 0.f, 0.f, 0.f };
+				touched.push_back(corners.triangle);
+			}
+			std::array<float, 3>& level = levels[corners.triangle];
+			for (int j = 0; j < 3; j++)
+				level[j] += (float)corners.w[j] * lamp.flame;
 		}
+	}
+	const float r31 = trackCamera.r[6], r32 = trackCamera.r[7], r33 = trackCamera.r[8], tz = trackCamera.t[2];
+	lampQuads.clear();
+	for (const uint32_t triangle : touched)
+	{
+		const DeadstationWorldTriangle& t = (*lampMesh)[triangle];
+		// (all behind the camera)
+		if (r31 * t.p[0][0] + r32 * t.p[0][1] + r33 * t.p[0][2] + tz < 0.f && r31 * t.p[1][0] + r32 * t.p[1][1] + r33 * t.p[1][2] + tz < 0.f && r31 * t.p[2][0] + r32 * t.p[2][1] + r33 * t.p[2][2] + tz < 0.f)
+			continue;
+		const std::array<float, 3>& level = levels[triangle];
+		// (too little to show)
+		if (level[0] + level[1] + level[2] < 12.f)
+			continue;
+		DeadstationWorldQuad quad {};
+		for (int j = 0; j < 4; j++)
+		{
+			const int k = j == 3 ? 2 : j;
+			quad.p[j][0] = t.p[k][0], quad.p[j][1] = t.p[k][1], quad.p[j][2] = t.p[k][2];
+			quad.uv[j][0] = t.uv[k][0], quad.uv[j][1] = t.uv[k][1];
+			const float w = std::min(level[k] / 255.f, 1.f);
+			quad.rgb[j][0] = (uint8_t)(LampFlameR * w), quad.rgb[j][1] = (uint8_t)(LampFlameG * w), quad.rgb[j][2] = (uint8_t)(LampFlameB * w);
+		}
+		quad.page = t.page, quad.clut = t.clut, quad.raw = 0, quad.semi = 1 + 1;	// (added: the PlayStation's mode 1)
+		quad.layer = (int8_t)(t.layer - 1);
+		lampQuads.push_back(quad);
 	}
 }
 void animateLamp(uint32_t o)
@@ -2557,7 +2566,7 @@ int onCarPolygons(CPUState *cpu, uint32_t)
 			lights[lightCount++] = &carLights[i];
 	const float bounce = carLightCount > 0 ? 0.14f * look.beam : 0.f;	// (its own, thrown back off the ground)
 	const float lampNear = lampLightAt(carX, carY, carZ);
-	const float ambientR = std::min(look.world.r + bounce + lampNear * 1.1f, 2.f), ambientG = std::min(look.world.g + bounce * 0.94f + lampNear * 0.5f, 2.f), ambientB = std::min(look.world.b + bounce * 0.78f + lampNear * 0.12f, 2.f);
+	const float ambientR = std::min(look.world.r + bounce + lampNear * 0.73f, 2.f), ambientG = std::min(look.world.g + bounce * 0.94f + lampNear * 0.33f, 2.f), ambientB = std::min(look.world.b + bounce * 0.78f + lampNear * 0.08f, 2.f);
 	const auto channel = [base](float k) { return (uint32_t)std::min((int)((float)base * k), 255); };
 	const uint32_t plain = channel(ambientR) | channel(ambientG) << 8 | channel(ambientB) << 16;
 	// (a car's decals, its plate and its stripes, lie on its panels or a hair inside them, and show by being drawn later: so among themselves a
@@ -3324,8 +3333,9 @@ constexpr uint32_t PausePadsBack = 0x80023DD0, PauseTrackBack = 0x80024E48, Main
 constexpr uint32_t PadHeld = PadStates, PadPressed = PadStates + 8, PadReleased = PadStates + 10, MenuSound = 0x8003FB30;
 constexpr uint32_t PadStart = 0x800, PadCross = 0x40, PadCircle = 0x20, PadTriangle = 0x10, PadLeft = 0x8000, PadRight = 0x2000;
 constexpr int MainFirstRow = 0x44, MainHighlightTop = 67, MainPanelBottom = 0x9C, MainRows = 8, MainHudRow = 2;
-constexpr int HudLeft = 84, HudRight = 236, HudLabelX = 93, HudValueX = 196;
+constexpr int HudLeft = 100, HudRight = 220, HudLabelX = 109, HudValueX = 180;
 bool onHudRow = false, onHudPage = false;
+uint32_t pauseSeenAt = 0xFFFF0000u;
 int hudRow = 0;
 inline void saveHud()
 {
@@ -3345,6 +3355,7 @@ inline void menuBeep(CPUState *cpu, uint32_t ra)
 // the pause menu's buttons, as they're read
 void pauseButtons(CPUState *cpu, uint32_t ra)
 {
+	pauseSeenAt = blanksSeen;
 	uint32_t pressed = psx_mod_read_half(PadPressed);
 	uint32_t &cursor = cpu->gpr[20];		// (s4)
 	const uint32_t page = cpu->gpr[23];		// (s7: 0 the main page)
@@ -3998,6 +4009,8 @@ void emitFrame()
 	if (tintWanted)
 		setTint(true);
 	addLampLight();
+	if (!lampQuads.empty() && !without("lamps"))
+		deadstation_world_quads(&trackCamera, lampQuads.data(), lampQuads.size());
 	// what's added or blended, farthest first
 	if (!trackQuadsBlended.empty() && costStep < 5 && !without("dust"))
 	{
@@ -4037,8 +4050,6 @@ void hudListHide(uint32_t from)
 {
 	if (hudOff == 0)
 		return;
-	int32_t ox = 0, oy = 0;
-	psx_gpu_draw_offset(&ox, &oy);
 	const auto coordinate = [](int v) { return (int)(int16_t)((uint32_t)v << 5) >> 5; };
 	uint32_t at = from & 0x1FFFFF;
 	for (int n = 0; n < 4000 && at != 0x1FFFFF; n++)
@@ -4073,7 +4084,8 @@ void hudListHide(uint32_t from)
 				w += known;
 				continue;
 			}
-			if (hudHidden(mx - ox, my - oy))
+			// (a record's place is on the screen: the buffer's offset isn't in it)
+			if (hudHidden(mx, my))
 				for (uint32_t j = 0; j < size; j++)
 				{
 					hudTakenOut.emplace_back(base + j * 4, ramWord(base + j * 4));
@@ -4089,6 +4101,10 @@ bool emitHud(uint32_t from)
 	static const bool off = std::getenv("DEADSTATION_RALLYCROSS_HUDLIST") != nullptr;
 	if (off)
 		return false;
+	static uint32_t hudFrames = 0;
+	const bool hudLogNow = hudLog && hudFrames++ % 600 == 300;
+	if (hudLogNow)
+		std::fprintf(stderr, "deadstation hud: a frame\n");
 	int32_t ox = 0, oy = 0;
 	// its area and offset first: the whole screen's, if there's a packet saying so at the start (a split screen's)
 	uint32_t at = from & 0x1FFFFF;
@@ -4127,7 +4143,7 @@ bool emitHud(uint32_t from)
 				corner(ramWord(base + 4), x, y);
 				const uint32_t texture = ramWord(base + 8), size = ramWord(base + 12);
 				const float wide = (float)(size & 0xFFFF), tall = (float)(size >> 16);
-				if (hudLog)
+				if (hudLogNow)
 					std::fprintf(stderr, "deadstation hud: sprite %.0f %.0f size %.0f %.0f\n", x - (float)ox, y - (float)oy, wide, tall);
 				if (hudHidden((int)(x - (float)ox + wide / 2), (int)(y - (float)oy + tall / 2)))
 				{
@@ -4162,7 +4178,7 @@ bool emitHud(uint32_t from)
 					uvs[j] = (uint16_t)ramWord(base + Texture[j]);
 				}
 				const float middleX = (xs[0] + xs[1] + xs[2] + xs[3]) / 4 - (float)ox, middleY = (ys[0] + ys[1] + ys[2] + ys[3]) / 4 - (float)oy;
-				if (hudLog)
+				if (hudLogNow)
 					std::fprintf(stderr, "deadstation hud: quad at %.0f %.0f\n", middleX, middleY);
 				if (hudHidden((int)middleX, (int)middleY))
 				{
@@ -4278,7 +4294,12 @@ uint32_t drawListFrom(uint32_t ot)
 {
 	hudListRestore();
 	if (!frameDrawn)
+	{
+		// (a frame of the pause menu's without the track: the HUD's in it all the same)
+		if (blanksSeen - pauseSeenAt < 8)
+			hudListHide(ot);
 		return ot;
+	}
 	frameDrawn = false;
 	if (emitHud(trackOt))
 		return 0;
