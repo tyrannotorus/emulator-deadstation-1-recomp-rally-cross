@@ -10,13 +10,22 @@
   "features": [
     "60 frames a second in a one-player race, all of it the game, at its true speed.",
     "Resolution: 320 x 240, 640 x 480 or 1024 x 768, set in Options.",
+    "Medium High: a higher camera between Medium and Far.",
+    "HUD: turn each part of it off, in the pause menu.",
     "Shadows: each car's own shape cast along the sun onto the ground.",
     "Conditions: a season, a time of day and the weather, in the game's own menus.",
+    "The Lost Mines' tunnel: its flames flicker orange on the rock and the cars.",
     "A native renderer: a race's frame takes no PlayStation packets.",
     "Controls: every button can be remapped, set in Options."
   ],
   "changelog": [
-    "First release."
+    "Now Rally Cross Remastered.",
+    "Medium High camera.",
+    "HUD page in the pause menu.",
+    "The Lost Mines' lamps light the tunnel.",
+    "Speed, gears and rollovers match the original.",
+    "Menus at 60; a clean cut out of a race.",
+    "Tyre and headlight fixes."
   ],
   "repo": "https://github.com/tyrannotorus/emulator-deadstation-1-recomp-rally-cross"
 }
