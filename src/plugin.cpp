@@ -510,9 +510,41 @@ struct Pages
 	bool built = false;
 	uint32_t season = 0, time = 0, wet = 0, snow = 0;
 	uint32_t choice = 0;		// four bytes, by page
-	uint32_t storm = 0, sandstorm = 0;
+	uint32_t storm = 0, sandstorm = 0, mediumHigh = 0;
 	uint8_t kept[4] = {};
 } pages;
+bool mediumHigh = false;		// (the camera: below)
+constexpr const char *CameraFile = "saves/camera.cfg";
+
+// ---- HUD: each part of it can be turned off, in a page of the pause menu ----
+//
+// The HUD's records say where they are: a part is what lies in its place on the 320 x 240 screen, whichever of the game's routines made it. In the middle of the screen, what's announced
+// and the pause menu lie in none of them, and stay.
+enum HudPart { HudTach, HudGear, HudSpeed, HudLap, HudPosition, HudRaceTime, HudLapTimes, HudBestLap, HudMap, HudParts };
+struct HudArea { const char *name; int16_t x0, y0, x1, y1; };
+constexpr HudArea HudAreas[HudParts] = {
+	{ "TACH", 4, 172, 76, 238 },
+	{ "GEAR", 76, 190, 97, 209 },
+	{ "SPEED", 62, 209, 128, 238 },
+	{ "LAP", 6, 14, 96, 33 },
+	{ "POSITION", 6, 33, 60, 50 },
+	{ "RACE TIME", 6, 50, 92, 68 },
+	{ "LAP TIMES", 6, 68, 72, 122 },
+	{ "BEST LAP", 214, 200, 306, 238 },
+	{ "MAP", 226, 18, 310, 104 },
+};
+constexpr const char *HudFile = "saves/hud.cfg";
+uint32_t hudOff = 0;			// a bit a part
+uint32_t hudTexts[HudParts] = {}, hudTextOn = 0, hudTextOff = 0, hudTextDone = 0, hudTextHud = 0, blackFill = 0;
+inline bool hudHidden(int x, int y)
+{
+	if (hudOff == 0)
+		return false;
+	for (int i = 0; i < HudParts; i++)
+		if ((hudOff >> i & 1) != 0 && x >= HudAreas[i].x0 && x < HudAreas[i].x1 && y >= HudAreas[i].y0 && y < HudAreas[i].y1)
+			return true;
+	return false;
+}
 
 uint32_t guestText(uint32_t& at, const char *text)
 {
@@ -575,6 +607,23 @@ void buildPages()
 		if (pages.kept[i] >= Rows[i])
 			pages.kept[i] = 0;
 		guestByte(pages.choice + i) = pages.kept[i];
+	}
+	pages.mediumHigh = guestText(at, "MEDIUM HIGH");
+	for (int i = 0; i < HudParts; i++)
+		hudTexts[i] = guestText(at, HudAreas[i].name);
+	hudTextOn = guestText(at, "ON"), hudTextOff = guestText(at, "OFF"), hudTextDone = guestText(at, "DONE"), hudTextHud = guestText(at, "HUD");
+	blackFill = at, at += 32;
+	if (FILE *f = std::fopen(HudFile, "rb"))
+	{
+		uint8_t kept[2] = {};
+		if (std::fread(kept, 1, 2, f) == 2)
+			hudOff = (uint32_t)kept[0] | (uint32_t)kept[1] << 8;
+		std::fclose(f);
+	}
+	if (FILE *f = std::fopen(CameraFile, "rb"))
+	{
+		mediumHigh = std::fgetc(f) == 1;
+		std::fclose(f);
 	}
 	pages.storm = guestText(at, "Storm");
 	pages.sandstorm = guestText(at, "Sandstorm");
@@ -1145,8 +1194,9 @@ void addFalling(CPUState *cpu)
 }
 
 constexpr float LampX = 50, LampY = -52, LampZ = 134, TailX = 45, TailY = -64, TailZ = -156, TailWide = 26, TailHigh = 12;	// (a tail lamp's lens, on the texture: a band low on the back)
-// A lamp's light in the air, as a volume: a soft strip down the length of the beam, brightest along its axis and nothing at its edges, widening as the beam spreads and fading as it goes,
-// with its true depth at each point, so it stops at what's in its way. Drawn once, so it costs a little of the screen, not many layers of it. In rain, snow or fog there's more
+// A lamp's light in the air, as a volume: fixed in the world with the car, so it can only ever go where the car points and lean as the car leans. A flat sheet across the car's own width, spreading
+// as the beam does, brightest along its axis and nothing at its edges; seen from the side, where that sheet would be a line, a second one upright through the same axis, by how side on it's seen.
+// Each with its true depth at each point, so it stops at what's in its way. Drawn once or twice, so it costs a little of the screen, not many layers of it. In rain, snow or fog there's more
 // in the air for it to light.
 void addCones()
 {
@@ -1156,38 +1206,46 @@ void addCones()
 	for (int i = 0; i < carLightCount; i++)
 	{
 		const CarLight& c = carLights[i];
+		// (how the eye sees the car: which of the sheets it faces)
+		const float ex = c.x - eye.x, ey = c.y - eye.y, ez = c.z - eye.z, el = std::max(std::sqrt(ex * ex + ey * ey + ez * ez), 1.f);
+		const float facesFlat = std::fabs(ex * c.up[0] + ey * c.up[1] + ez * c.up[2]) / el, facesUpright = std::fabs(ex * c.side[0] + ey * c.side[1] + ez * c.side[2]) / el;
 		for (int side = -1; side <= 1; side += 2)
 		{
 			const float sideX = c.side[0] * LampX * (float)side, sideY = c.side[1] * LampX * (float)side, sideZ = c.side[2] * LampX * (float)side;
 			const float lx = c.x + sideX + c.fx * LampZ + c.up[0] * LampY, ly = c.y + sideY + c.fy * LampZ + c.up[1] * LampY, lz = c.z + sideZ + c.fz * LampZ + c.up[2] * LampY;
-			float sx[7], sy[7], depth[7];
-			bool known[7];
-			for (int j = 0; j < 7; j++)
-				known[j] = eye.project(lx + c.fx * Along[j], ly + c.fy * Along[j] + Along[j] * 0.035f, lz + c.fz * Along[j], sx[j], sy[j], depth[j]);
-			for (int j = 0; j < 6; j++)
-			{
-				if (!known[j] || !known[j + 1])
-					continue;
-				// (across the strip's line on the screen; end on, across whatever way)
-				float dx = sx[j + 1] - sx[j], dy = sy[j + 1] - sy[j], length = std::sqrt(dx * dx + dy * dy);
-				if (length < 0.5f)
-					dx = 1, dy = 0, length = 1;
-				const float nx = -dy / length, ny = dx / length;
-				const auto half = [&](int n) { return std::clamp((14.f + Along[n] * 0.26f) * eye.h / depth[n], 0.8f, 70.f); };
+			const auto sheet = [&](const float *across, float strength) {
+				float sx[7], sy[7], depth[7], lo[7][2], hi[7][2];
+				bool known[7];
+				for (int j = 0; j < 7; j++)
+				{
+					const float px = lx + c.fx * Along[j], py = ly + c.fy * Along[j] + Along[j] * 0.035f, pz = lz + c.fz * Along[j], half = 14.f + Along[j] * 0.26f;
+					float z0, z1;
+					known[j] = eye.project(px, py, pz, sx[j], sy[j], depth[j]) &&
+							eye.project(px - across[0] * half, py - across[1] * half, pz - across[2] * half, lo[j][0], lo[j][1], z0) &&
+							eye.project(px + across[0] * half, py + across[1] * half, pz + across[2] * half, hi[j][0], hi[j][1], z1);
+				}
 				const auto light = [&](int n) {
 					// (gone by the time it reaches the camera: it's where a car behind the eye's beam would be cut off, a hard edge across it)
 					const float fade = (1.f - Along[n] / 1700.f) * smooth01(180.f, 900.f, depth[n]);
-					return glowWord({ 1.0f, 0.94f, 0.78f }, look.haze * look.beam * fade * fade * 0.42f);
+					return glowWord({ 1.0f, 0.94f, 0.78f }, look.haze * look.beam * fade * fade * 0.42f * strength);
 				};
-				const float wa = half(j), wb = half(j + 1);
-				const uint32_t ca = light(j), cb = light(j + 1);
-				for (int edge = -1; edge <= 1; edge += 2)
+				for (int j = 0; j < 6; j++)
 				{
-					const float ax = sx[j] + nx * wa * (float)edge, ay = sy[j] + ny * wa * (float)edge, bx = sx[j + 1] + nx * wb * (float)edge, by = sy[j + 1] + ny * wb * (float)edge;
-					glowsNow.push_back({ { sx[j], ax, sx[j + 1] }, { sy[j], ay, sy[j + 1] }, { ca, 0, cb }, { depth[j], depth[j], depth[j + 1] } });
-					glowsNow.push_back({ { ax, bx, sx[j + 1] }, { ay, by, sy[j + 1] }, { 0, 0, cb }, { depth[j], depth[j + 1], depth[j + 1] } });
+					if (!known[j] || !known[j + 1])
+						continue;
+					const uint32_t ca = light(j), cb = light(j + 1);
+					for (const auto *e : { lo, hi })
+					{
+						glowsNow.push_back({ { sx[j], e[j][0], sx[j + 1] }, { sy[j], e[j][1], sy[j + 1] }, { ca, 0, cb }, { depth[j], depth[j], depth[j + 1] } });
+						glowsNow.push_back({ { e[j][0], e[j + 1][0], sx[j + 1] }, { e[j][1], e[j + 1][1], sy[j + 1] }, { 0, 0, cb }, { depth[j], depth[j + 1], depth[j + 1] } });
+					}
 				}
-			}
+			};
+			// (from behind a car, as a chasing camera mostly is, the flat one's all there is, at a slant, so it's kept up: from side on it gives way)
+			const float flat = 0.55f + 0.45f * facesFlat;
+			sheet(c.side, flat);
+			if (facesUpright > 0.2f)
+				sheet(c.up, smooth01(0.2f, 0.7f, facesUpright));
 		}
 	}
 }
@@ -1520,6 +1578,88 @@ void learnSurfaces(const std::vector<DeadstationWorldTriangle>& mesh, CPUState *
 	cpu->gpr[31] = ra;
 }
 
+// ---- The Lost Mines' lamps give light ----
+//
+// The game's lamps there are flat glows with no light of their own. Here each flickers orange, on what's near it: the polygons of the track round it, drawn again in its light, added, each with its
+// own texture, so the rock's lit and not painted, and how much at each corner by how far and how it faces. Worked out once for a race. What faces away from a lamp (the hillside over a tunnel) gets
+// none of it. A car near one takes on the light as a whole.
+struct LampCorners { uint32_t triangle; uint8_t w[3]; };
+struct LampLight { uint32_t object; float x, y, z, flame, aim; std::vector<LampCorners> lit; };
+std::vector<LampLight> lampLights;
+const std::vector<DeadstationWorldTriangle> *lampMesh = nullptr;
+constexpr float LampReach = 1500.f, LampFlameR = 230.f, LampFlameG = 104.f, LampFlameB = 26.f;
+constexpr int LampsLit = 6;
+void learnLampLight(const std::vector<DeadstationWorldTriangle>& mesh, uint32_t index)
+{
+	lampLights.clear();
+	lampMesh = &mesh;
+	if (guestByte(SelTrack) != conditions::LostMines)
+		return;
+	for (int cell = 0; cell < 64 * 64; cell++)
+	{
+		const int32_t tileIndex = ramHalf(index + (uint32_t)cell * 2);
+		if (tileIndex == -1)
+			continue;
+		const uint32_t tile = index + (uint32_t)tileIndex * 88 + 8364;
+		for (uint32_t object = ramWord(tile + 68); object != 0; object = ramWord(object + 12))
+			if (ramWord(ObjectHandlers + (uint32_t)ramByte(object) * 4) == TrackLamp)
+			{
+				lampLights.push_back({ object, (float)ramHalf(object + 4), (float)ramHalf(object + 6), (float)ramHalf(object + 8), 1.f, 1.f, {} });
+				std::fprintf(stderr, "deadstation rallycross: a lamp at %d %d %d, kind %u, colour %06X\n", ramHalf(object + 4), ramHalf(object + 6), ramHalf(object + 8), ramByte(object + 1), ramWord(object + 20) & 0xFFFFFF);
+			}
+	}
+	// (which way a polygon's corners go round for its face: what's most of a track is ground, and it faces up, y's negative)
+	double upward = 0;
+	for (const DeadstationWorldTriangle& t : mesh)
+		upward += ((double)t.p[1][2] - t.p[0][2]) * ((double)t.p[2][0] - t.p[0][0]) - ((double)t.p[1][0] - t.p[0][0]) * ((double)t.p[2][2] - t.p[0][2]);
+	const float wind = upward < 0 ? 1.f : -1.f;
+	size_t lit = 0;
+	for (LampLight& lamp : lampLights)
+	{
+		for (uint32_t i = 0; i < (uint32_t)mesh.size(); i++)
+		{
+			const DeadstationWorldTriangle& t = mesh[i];
+			const float ax = (float)t.p[1][0] - t.p[0][0], ay = (float)t.p[1][1] - t.p[0][1], az = (float)t.p[1][2] - t.p[0][2];
+			const float bx = (float)t.p[2][0] - t.p[0][0], by = (float)t.p[2][1] - t.p[0][1], bz = (float)t.p[2][2] - t.p[0][2];
+			float nx = (ay * bz - az * by) * wind, ny = (az * bx - ax * bz) * wind, nz = (ax * by - ay * bx) * wind;
+			const float nl = std::max(std::sqrt(nx * nx + ny * ny + nz * nz), 1.f);
+			nx /= nl, ny /= nl, nz /= nl;
+			LampCorners corners { i, { 0, 0, 0 } };
+			bool any = false;
+			for (int j = 0; j < 3; j++)
+			{
+				const float dx = lamp.x - t.p[j][0], dy = lamp.y - t.p[j][1], dz = lamp.z - t.p[j][2], far = std::sqrt(dx * dx + dy * dy + dz * dz);
+				if (far >= LampReach)
+					continue;
+				const float faces = t.twoSided ? 1.f : (dx * nx + dy * ny + dz * nz) / std::max(far, 1.f);
+				if (faces < -0.05f)
+					continue;
+				const float left = 1.f - far / LampReach;
+				corners.w[j] = (uint8_t)std::clamp(left * left * (0.35f + 0.65f * std::max(faces, 0.f)) * 255.f, 0.f, 255.f);
+				any = any || corners.w[j] != 0;
+			}
+			if (any)
+				lamp.lit.push_back(corners);
+		}
+		lit += lamp.lit.size();
+	}
+	std::fprintf(stderr, "deadstation rallycross: %zu lamps give light, on %zu polygons\n", lampLights.size(), lit);
+}
+// how much of their light is at a place
+inline float lampLightAt(float x, float y, float z)
+{
+	float light = 0;
+	for (const LampLight& lamp : lampLights)
+	{
+		const float dx = lamp.x - x, dy = lamp.y - y, dz = lamp.z - z, near = dx * dx + dy * dy + dz * dz;
+		if (near < LampReach * LampReach)
+		{
+			const float left = 1.f - std::sqrt(near) / LampReach;
+			light += left * left * lamp.flame;
+		}
+	}
+	return std::min(light, 1.2f);
+}
 void learnTrackCells(uint32_t index)
 {
 	trackCells.clear();
@@ -1592,6 +1732,7 @@ void learnTrackCells(uint32_t index)
 		}
 	settleOverlaps(mesh, cellOfGrid);
 	deadstation_world_load(mesh.data(), mesh.size(), (unsigned)trackCells.size());
+	learnLampLight(mesh, index);
 	if (surfaceCpu != nullptr)
 		learnSurfaces(mesh, surfaceCpu);
 }
@@ -1717,6 +1858,67 @@ inline uint32_t lampDice()
 	lampRandom ^= lampRandom << 13, lampRandom ^= lampRandom >> 17, lampRandom ^= lampRandom << 5;
 	return lampRandom >> 8;
 }
+// the lamps near the eye, by their flames of the moment
+void addLampLight()
+{
+	if (lampLights.empty() || lampMesh == nullptr)
+		return;
+	const bool moving = tickPass && ramByte(AnimationsHeld) == 0;
+	int nearest[LampsLit];
+	float nearestAt[LampsLit];
+	int count = 0;
+	for (int i = 0; i < (int)lampLights.size(); i++)
+	{
+		LampLight& lamp = lampLights[i];
+		if (moving)
+		{
+			// (a flame: restless, now and then all but out)
+			const uint32_t dice = lampDice();
+			if ((dice & 3) == 0)
+				lamp.aim = (dice & 0x1F00) == 0 ? 0.3f : 0.62f + 0.38f * (float)((dice >> 4) & 255) / 255.f;
+			lamp.flame += (lamp.aim - lamp.flame) * 0.4f;
+		}
+		const float dx = lamp.x - eye.x, dy = lamp.y - eye.y, dz = lamp.z - eye.z, at = dx * dx + dy * dy + dz * dz;
+		if (at > 9000.f * 9000.f)
+			continue;
+		if (count == LampsLit && nearestAt[LampsLit - 1] <= at)
+			continue;
+		int place = count < LampsLit ? count++ : LampsLit - 1;
+		while (place > 0 && nearestAt[place - 1] > at)
+		{
+			nearest[place] = nearest[place - 1], nearestAt[place] = nearestAt[place - 1];
+			place--;
+		}
+		nearest[place] = i, nearestAt[place] = at;
+	}
+	const float r31 = trackCamera.r[6], r32 = trackCamera.r[7], r33 = trackCamera.r[8], tz = trackCamera.t[2];
+	for (int n = 0; n < count; n++)
+	{
+		const LampLight& lamp = lampLights[nearest[n]];
+		for (const LampCorners& corners : lamp.lit)
+		{
+			const DeadstationWorldTriangle& t = (*lampMesh)[corners.triangle];
+			DeadstationWorldQuad quad {};
+			float depth = 0;
+			for (int j = 0; j < 4; j++)
+			{
+				const int k = j == 3 ? 2 : j;
+				quad.p[j][0] = t.p[k][0], quad.p[j][1] = t.p[k][1], quad.p[j][2] = t.p[k][2];
+				quad.uv[j][0] = t.uv[k][0], quad.uv[j][1] = t.uv[k][1];
+				const float w = (float)corners.w[k] / 255.f * lamp.flame;
+				quad.rgb[j][0] = (uint8_t)(LampFlameR * w), quad.rgb[j][1] = (uint8_t)(LampFlameG * w), quad.rgb[j][2] = (uint8_t)(LampFlameB * w);
+				if (j < 3)
+					depth += r31 * t.p[k][0] + r32 * t.p[k][1] + r33 * t.p[k][2] + tz;
+			}
+			if (depth < -3.f * 512.f)
+				continue;
+			quad.page = t.page, quad.clut = t.clut, quad.raw = 0, quad.semi = 1 + 1;	// (added: the PlayStation's mode 1)
+			quad.layer = (int8_t)(t.layer - 1);
+			trackQuadsBlended.push_back(quad);
+			trackQuadsBlendedZ.push_back(depth / 3.f);
+		}
+	}
+}
 void animateLamp(uint32_t o)
 {
 	uint8_t& r = guestByte(o + 20), &g = guestByte(o + 21), &b = guestByte(o + 22), &aim = guestByte(o + 36);
@@ -1774,10 +1976,13 @@ void animateLamp(uint32_t o)
 	}
 }
 
+void pauseHighlight(CPUState *cpu);
 int onTrackDraw(CPUState *cpu, uint32_t)
 {
 	if (inTrack)
 		return 0;
+	if (cpu->gpr[31] == 0x80024E48)
+		pauseHighlight(cpu);
 	if (skyDue)
 		patchSky();
 	Timed timedTrack(passTimes.track);
@@ -2017,6 +2222,12 @@ int onTrackDraw(CPUState *cpu, uint32_t)
 							const auto mixed = [far](uint32_t a, uint32_t b) { return (uint32_t)((float)a + ((float)b - (float)a) * far); };
 							colour = mixed(colour & 255, steady & 255) | mixed((colour >> 8) & 255, (steady >> 8) & 255) << 8 | mixed((colour >> 16) & 255, (steady >> 16) & 255) << 16;
 						}
+						for (const LampLight& lamp : lampLights)
+							if (lamp.object == object)
+							{
+								colour = (uint32_t)(255.f * lamp.flame) | (uint32_t)(150.f * lamp.flame) << 8 | (uint32_t)(50.f * lamp.flame) << 16;
+								break;
+							}
 						const float wide = (float)(ramHalf(object + 16) >> 5), tall = (float)(ramHalf(object + 18) >> 4 >> 1);
 						const float dx = std::fabs(px - cameraX), dz = std::fabs(pz - cameraZ);
 						const float angle = ((dx + dz - std::min(dx, dz) / 2) / 2 - (py - cameraY)) * (6.2831853f / 4096.f), cs = std::cos(angle), sn = std::sin(angle);
@@ -2332,6 +2543,21 @@ int onCarRenderer(CPUState *cpu, uint32_t)
 // it in the race's light, plus the beams of the other cars that reach it, by the way the polygon faces them. No GTE and no packets, so no
 // ordering table: the depth test orders them, and a light can know what's in front of it.
 constexpr uint32_t CarPolygonsDraw = 0x80012C74;
+// (the wheel at this place on the ground: the car's nearest of its four wheel points, whose first flag says so)
+float wheelRise[8][4] = {};
+inline bool wheelOnGround(uint32_t record, float x, float z)
+{
+	float nearest = 1e12f;
+	bool down = false;
+	for (uint32_t i = 0; i < 4; i++)
+	{
+		const uint32_t point = record + 476 + i * 192;
+		const float dx = (float)(int32_t)rw(point) / 4096.f - x, dz = (float)(int32_t)rw(point + 8) / 4096.f - z, d = dx * dx + dz * dz;
+		if (d < nearest)
+			nearest = d, down = (psx_mod_read_half(record + 572 + i * 192) & 1) != 0;
+	}
+	return down;
+}
 int onCarPolygons(CPUState *cpu, uint32_t)
 {
 	if (guestByte(Players) > 1 && !splitNative)
@@ -2359,7 +2585,8 @@ int onCarPolygons(CPUState *cpu, uint32_t)
 		if (carLights[i].object != car && (carX + 300 >= carLights[i].x0 && carX - 300 <= carLights[i].x1 && carZ + 300 >= carLights[i].z0 && carZ - 300 <= carLights[i].z1))
 			lights[lightCount++] = &carLights[i];
 	const float bounce = carLightCount > 0 ? 0.14f * look.beam : 0.f;	// (its own, thrown back off the ground)
-	const float ambientR = std::min(look.world.r + bounce, 2.f), ambientG = std::min(look.world.g + bounce * 0.94f, 2.f), ambientB = std::min(look.world.b + bounce * 0.78f, 2.f);
+	const float lampNear = lampLightAt(carX, carY, carZ);
+	const float ambientR = std::min(look.world.r + bounce + lampNear * 1.1f, 2.f), ambientG = std::min(look.world.g + bounce * 0.94f + lampNear * 0.5f, 2.f), ambientB = std::min(look.world.b + bounce * 0.78f + lampNear * 0.12f, 2.f);
 	const auto channel = [base](float k) { return (uint32_t)std::min((int)((float)base * k), 255); };
 	const uint32_t plain = channel(ambientR) | channel(ambientG) << 8 | channel(ambientB) << 16;
 	// (a car's decals, its plate and its stripes, lie on its panels or a hair inside them, and show by being drawn later: so among themselves a
@@ -2386,20 +2613,28 @@ int onCarPolygons(CPUState *cpu, uint32_t)
 				m.r[k] = (float)rh(at + (uint32_t)k * 2) / 4096.f;
 			for (int k = 0; k < 3; k++)
 				m.t[k] = (float)(int32_t)rw(at + 20 + (uint32_t)k * 4);
-			// A wheel on what's drawn: it stands on the physics' ground, and the polygons drawn there can be a little above or below that. By the difference, within reason.
-			if (index < 12 && !meshFloor.empty())
+			// A wheel on what's drawn: it stands on the physics' ground, and the polygons drawn there can be a little above or below that. By the difference, within reason, and only
+			// while it's on the ground: what's under a wheel in the air means nothing to it, and that difference changes by the grid square. It follows smoothly, either way.
+			if (index < 12)
 			{
+				const int corner = (int)(index & 3);
+				float target = 0;
 				const float dx = m.t[0] - trackCamera.t[0], dy = m.t[1] - trackCamera.t[1], dz = m.t[2] - trackCamera.t[2];
 				const float wx = trackCamera.r[0] * dx + trackCamera.r[3] * dy + trackCamera.r[6] * dz, wz = trackCamera.r[2] * dx + trackCamera.r[5] * dy + trackCamera.r[8] * dz;
-				const int16_t floor = surfaceAt(meshFloor, wx, wz);
-				if (floor != SurfaceNone)
+				if (!meshFloor.empty() && wheelOnGround(rw(car + 100), wx, wz))
 				{
-					const uint32_t ra = cpu->gpr[31], a0 = cpu->gpr[4], a1 = cpu->gpr[5];
-					Ground ground(cpu);
-					const float rise = std::clamp((float)floor - (float)ground.height((int)wx, (int)wz), -32.f, 32.f);
-					cpu->gpr[31] = ra, cpu->gpr[4] = a0, cpu->gpr[5] = a1;
-					m.t[0] += trackCamera.r[1] * rise, m.t[1] += trackCamera.r[4] * rise, m.t[2] += trackCamera.r[7] * rise;
+					const int16_t floor = surfaceAt(meshFloor, wx, wz);
+					if (floor != SurfaceNone)
+					{
+						const uint32_t ra = cpu->gpr[31], a0 = cpu->gpr[4], a1 = cpu->gpr[5];
+						Ground ground(cpu);
+						target = std::clamp((float)floor - (float)ground.height((int)wx, (int)wz), -32.f, 32.f);
+						cpu->gpr[31] = ra, cpu->gpr[4] = a0, cpu->gpr[5] = a1;
+					}
 				}
+				float& rise = wheelRise[currentCarId][corner];
+				rise += (target - rise) * 0.2f;
+				m.t[0] += trackCamera.r[1] * rise, m.t[1] += trackCamera.r[4] * rise, m.t[2] += trackCamera.r[7] * rise;
 			}
 		}
 		for (uint32_t q = 0; q < polygonCount; q++)
@@ -2521,6 +2756,7 @@ inline bool sixtyNow(uint32_t ra, uint32_t back)
 }
 inline int16_t &guestHalf(uint32_t a) { return *(int16_t *)(g_psx_ram + (a & 0x1FFFFE)); }
 // The helper everything in the physics multiplies with, a * b >> shift, rounded (0x8003F48C), native. And the time step, which it's handed
+constexpr uint32_t TyreStateA = 0x80032EA0, TyreStateB = 0x8003394C, TyreBody = 0x80033310;
 bool helpersNative = true;	// DEADSTATION_SDK_OFF=helpers: the game's own; the AI's race is the same to the unit, or these are wrong
 int onMultiply(CPUState *cpu, uint32_t)
 {
@@ -2533,7 +2769,11 @@ int onMultiply(CPUState *cpu, uint32_t)
 	{
 		if (cpu->gpr[31] == WheelSpinA || cpu->gpr[31] == WheelSpinB)
 			b = tickPass ? b : 0;
-		else
+		// (what a tyre works out its grip from, wheel and car, is over the wheel's own step: a whole one. At half of it a tyre thought the same slip wanted twice the force, and a car
+		// went 7% too fast at 6 seconds from the line, and shifted too soon)
+		else if (cpu->gpr[31] == TyreBody)
+			b *= 2;
+		else if (cpu->gpr[31] != TyreStateA && cpu->gpr[31] != TyreStateB)
 			b = b == 0x2222 ? 0x1111 : b == 0x56F ? 0x2B8 : b;
 	}
 	if (!helpersNative)
@@ -2642,9 +2882,25 @@ int onVectorNormalS(CPUState *cpu, uint32_t)
 }
 // DEADSTATION_RALLYCROSS_FREEZE=N (tests): N passes into a race the cars stop where they are, the camera with them, all else going on. What changes between two frames then is what flashes.
 uint32_t freezeAfter = 0, racePasses = 0;
+// (tests: the same hands on the same car at either rate, below)
+bool handsTest = false;
+void handsBeforePhysics();
+void handsAfterPhysics();
+void handsBeforeBrains();
 int onPhysicsStep(CPUState *cpu, uint32_t)
 {
 	const uint32_t ra = cpu->gpr[31];
+	if (handsTest && !inPhysics && ra == PhysicsBack)
+	{
+		handsBeforePhysics();
+		const bool wasPhysics = inPhysics, half = sixty && guestByte(Players) <= 1;
+		inPhysics = true, halfStep = half;
+		psx_dispatch_call(cpu, PhysicsStep, ra);
+		inPhysics = wasPhysics, halfStep = false;
+		cpu->gpr[31] = ra;
+		handsAfterPhysics();
+		return 1;
+	}
 	if (inPhysics || !sixtyNow(ra, PhysicsBack))
 		return 0;
 	if (freezeAfter != 0 && ++racePasses > freezeAfter)
@@ -2687,7 +2943,6 @@ struct HalfRate
 struct CarControls
 {
 	HalfRate steering, throttle, brake;
-	bool heldKick = false;
 };
 CarControls carControls[8];
 uint64_t passesKept = 0;
@@ -2699,7 +2954,14 @@ bool autopilot = false;
 constexpr uint32_t CarRecordsAt = 0x800B3448;
 // the cars set up: each one's time step over its mass, and the inverse (+640, +644), worked out once here; and a race's start for all of this
 constexpr uint32_t CarsSetUp = 0x8002ECD0;
-constexpr uint32_t KickRamp = Gp + 1244;	// a turned over car's righting force rises by this, a step (0x80032414)
+// A turned over car's righting kick (0x800323DC). A press is one step of force: (its least + what it's risen to) x how far over the car is, the rise adding on with each kick, up to its most,
+// and back to nothing with all four wheels down. A kick split over two passes loses by the second: the car's already moving and the ground and the springs have had a pass to answer, so it
+// took about twice as many presses to get a car back as at the game's 30. So here too a kick is one step, on one pass. Twice the force would be the same push over half the time, but the half
+// step's car answers less to it, so it's by the measure: flipped twelve times, pressed the same, 2.0 took 4.7 kicks, 2.6 took 3.2, the game's 30 3.3.
+constexpr uint32_t KickLeast = Gp + 1284, KickRamp = Gp + 1244, KickMost = Gp + 1256;
+constexpr int KickLeastAt30 = 0x270, KickRampAt30 = 50, KickMostAt30 = 0x400;
+int kickPercent = 250;		// DEADSTATION_RALLYCROSS_KICK (tests)
+constexpr uint32_t PointForceFlag = Gp + 1472;
 bool inSetUp = false;
 int onCarsSetUp(CPUState *cpu, uint32_t)
 {
@@ -2723,7 +2985,9 @@ int onCarsSetUp(CPUState *cpu, uint32_t)
 	psx_dispatch_call(cpu, CarsSetUp, ra);
 	inSetUp = halfStep = false;
 	cpu->gpr[31] = ra;
-	guestHalf(KickRamp) = 25;
+	guestHalf(KickLeast) = (int16_t)(KickLeastAt30 * kickPercent / 100);
+	guestHalf(KickRamp) = (int16_t)(KickRampAt30 * kickPercent / 100);
+	guestHalf(KickMost) = (int16_t)(KickMostAt30 * kickPercent / 100);
 	if (stats)
 	{
 		char table[256] = "";
@@ -2758,7 +3022,7 @@ template <uint32_t Back> int everySecondPass(CPUState *cpu, uint32_t)
 constexpr uint32_t Brains = 0x8003B3EC, BrainsBack = 0x8002047C, CarRecords = 0x800B3448, CarRecordSize = 4100;
 constexpr uint32_t HumanControls = 0x8002DF3C, AiBrain = 0x8003BA90, AiHands = 0x8003BB40;
 // (each car's brain now, what it is if it's a person's or not, and the states of a person's that call the controls)
-constexpr uint32_t BrainNow = 3924, BrainIsAi = 3972, Steering = 208, Throttle = 210, Brake = 212, Kick = 220, KickWait = 221, AiPush = 4084, AiPull = 4088;
+constexpr uint32_t BrainNow = 3924, BrainIsAi = 3972, Steering = 208, Throttle = 210, Brake = 212, GearMode = 214, GearHold = 215, Kick = 220, KickWait = 221, AiPush = 4084, AiPull = 4088;
 inline bool personsControls(uint32_t brain)
 {
 	return brain == HumanControls || brain == 0x8003C704 || brain == 0x8003C774 || brain == 0x8003C874;
@@ -2789,6 +3053,8 @@ bool inBrains = false;
 int onBrains(CPUState *cpu, uint32_t)
 {
 	const uint32_t ra = cpu->gpr[31];
+	if (handsTest && !inBrains && ra == BrainsBack)
+		handsBeforeBrains();
 	if (inBrains || !sixtyNow(ra, BrainsBack))
 		return 0;
 	inBrains = true;
@@ -2798,11 +3064,11 @@ int onBrains(CPUState *cpu, uint32_t)
 	guestWord(Gp + 1412, tickPass ? 48 : 47);
 	guestWord(Gp + 1496, 26);
 	const int cars = std::min<int>(guestByte(0x8005649A), 8);
-	struct Was { int16_t steering, throttle, brake; uint8_t kick, kickWait; int32_t push, pull; } was[8];
+	struct Was { int16_t steering, throttle, brake; uint8_t kickWait; int32_t push, pull; } was[8];
 	for (int i = 0; i < cars; i++)
 	{
 		const uint32_t car = CarRecords + (uint32_t)i * CarRecordSize;
-		was[i] = { guestHalf(car + Steering), guestHalf(car + Throttle), guestHalf(car + Brake), guestByte(car + Kick), guestByte(car + KickWait),
+		was[i] = { guestHalf(car + Steering), guestHalf(car + Throttle), guestHalf(car + Brake), guestByte(car + KickWait),
 				(int32_t)guestRead(car + AiPush), (int32_t)guestRead(car + AiPull) };
 	}
 	Timed timed(passTimes.brains);
@@ -2816,6 +3082,10 @@ int onBrains(CPUState *cpu, uint32_t)
 			if (person ? personsControls(brain) : brain == AiBrain)
 			{
 				cpu->gpr[4] = car;
+				// (a person's automatic gearbox goes by the revs, new only on the passes the wheels' spin is: on the pass between, it would shift again on the same revs, 2nd to 4th.
+				// Its own test holds it off with this byte, and clears it)
+				if (person && guestByte(car + GearMode) != 0)
+					guestByte(car + GearHold) = 1;
 				psx_dispatch_call(cpu, person ? HumanControls : AiHands, ra);
 			}
 		}
@@ -2838,6 +3108,9 @@ int onBrains(CPUState *cpu, uint32_t)
 		halve(guestHalf(car + Brake), was[i].brake, c.brake);
 		if (guestHalf(car + BrainIsAi) != 0)
 		{
+			// (its kick, as a person's, one pass: its brain sets it on the passes it thinks, and it would stay for the next)
+			if (!tickPass)
+				guestByte(car + Kick) = 0;
 			// (what the AI's let go of, by the amount a step, and at once what it takes up)
 			for (const auto [at, then] : { std::pair<uint32_t, int32_t>(AiPush, was[i].push), std::pair<uint32_t, int32_t>(AiPull, was[i].pull) })
 			{
@@ -2848,21 +3121,430 @@ int onBrains(CPUState *cpu, uint32_t)
 		}
 		else
 		{
-			// a person's righting kick (one step of force, 20 steps apart): two passes of half the step; the wait, 40
-			if (guestByte(car + Kick) != 0)
-				c.heldKick = !c.heldKick;
-			else if (c.heldKick)
-			{
-				guestByte(car + Kick) = was[i].kick;
-				c.heldKick = false;
-			}
+			// a person's righting kick: 20 steps apart, so 40 passes
 			if (!tickPass && guestByte(car + KickWait) + 1 == was[i].kickWait)
 				guestByte(car + KickWait) = was[i].kickWait;
 		}
 	}
+	// (what the force between a car's points is measured against, for its panels: raised as the kick's is, on the pass it's kicked, or a kick would knock them about)
+	bool kicked = false;
+	for (int i = 0; i < cars; i++)
+		kicked = kicked || guestByte(CarRecords + (uint32_t)i * CarRecordSize + Kick) != 0;
+	guestWord(PointForceFlag, kicked ? (uint32_t)((int64_t)0x400000 * kickPercent / 100) : 0x400000u);
 	inBrains = false;
 	cpu->gpr[31] = ra;
 	return 1;
+}
+
+
+// ---- Tests: the same hands on the same car at either rate ----
+//
+// DEADSTATION_RALLYCROSS_DRIVE="from-to:mask,..." (seconds of the race, pad bits): a scripted drive, the car's place, speed and attitude every tenth of a second.
+// DEADSTATION_RALLYCROSS_ROLL=N: N times the car is pushed over from the side, left to rest, and the triggers pressed by turns five times a second until it's back on its wheels. Each
+// on the game's clock, so DEADSTATION_SDK_OFF=sixty (the game's own 30) and this are the same hands.
+struct HandsPress { float from, to; uint16_t mask; };
+std::vector<HandsPress> handsDrive;
+int rollTrials = 0;
+uint64_t handsSteps = 0;
+inline uint32_t handsRate() { return sixty && guestByte(Players) <= 1 ? 60u : 30u; }
+struct RollTest
+{
+	enum Phase { Waiting, Pushing, Resting, Pressing, Upright, Finished } phase = Waiting;
+	int trial = 0, presses = 0, accepted = 0, forced = 0;
+	uint32_t at = 0, startedAt = 0, contactSteps = 0, steps = 0, restSteps = 0;
+	uint32_t contactA = 0, contactB = 0;
+	bool next = false;
+	int16_t restUp = 0;
+} roll;
+inline float carUpY() { return (float)guestHalf(CarRecords + 184) / 4096.f; }
+inline bool wheelsDown()
+{
+	const uint32_t c = CarRecords;
+	return (psx_mod_read_half(c + 572) & 1) && (psx_mod_read_half(c + 764) & 1) && (psx_mod_read_half(c + 956) & 1) && (psx_mod_read_half(c + 1148) & 1);
+}
+constexpr uint32_t RaceClock = 0x800659C0;
+void handsBeforeBrains()
+{
+	if (guestRead(RaceClock) == 0)
+		return;
+	const float now = (float)handsSteps / (float)handsRate();
+	uint16_t held = 0;
+	for (const HandsPress& p : handsDrive)
+		if (now >= p.from && now < p.to)
+			held |= p.mask;
+	uint16_t edges = 0;
+	if (rollTrials > 0 && roll.phase == RollTest::Pressing)
+	{
+		const uint32_t every = handsRate() / 5;
+		if ((handsSteps - roll.startedAt) % every == 0)
+		{
+			const uint16_t mask = roll.next ? 2 : 1;
+			roll.next = !roll.next;
+			held |= mask, edges |= mask;
+			roll.presses++;
+		}
+	}
+	static uint16_t heldWas = 0;
+	edges |= held & ~heldWas;
+	const uint16_t released = heldWas & ~held;
+	heldWas = held;
+	if (held != 0 || edges != 0 || released != 0)
+	{
+		const uint32_t pad = PadStates;
+		psx_mod_write_half(pad, (uint16_t)(psx_mod_read_half(pad) | held));
+		psx_mod_write_half(pad + 8, (uint16_t)(psx_mod_read_half(pad + 8) | edges));
+		psx_mod_write_half(pad + 10, (uint16_t)(psx_mod_read_half(pad + 10) | released));
+	}
+}
+void handsBeforePhysics()
+{
+	if (guestRead(RaceClock) == 0)
+		return;
+	handsSteps++;
+	if (rollTrials == 0 || roll.phase != RollTest::Pushing)
+		return;
+	// (world up is y's negative: one side's points lifted, the other's held down, until it's past its side)
+	const uint32_t c = CarRecords;
+	const int side = roll.trial & 1;
+	static constexpr int Lift[2][4] = { { 1, 2, 5, 6 }, { 0, 3, 4, 7 } };
+	for (int i = 0; i < 4; i++)
+	{
+		const uint32_t f = c + 508 + (uint32_t)Lift[side][i] * 192 + 4;
+		guestWord(f, guestRead(f) - 0x300000u);
+	}
+}
+void handsAfterPhysics()
+{
+	if (guestRead(RaceClock) == 0)
+		return;
+	const uint32_t rate = handsRate(), c = CarRecords;
+	if (handsSteps % (rate / 10) == 0 && !handsDrive.empty())
+		std::fprintf(stderr, "deadstation hands: %.1f at %d %d %d point %d %d forward %d %d %d up %d gear %d revs %d spin %d throttle %d brake %d steering %d clock %u\n", (double)handsSteps / rate,
+				(int32_t)guestRead(c + 196), (int32_t)guestRead(c + 200), (int32_t)guestRead(c + 204), (int32_t)guestRead(c + 476), (int32_t)guestRead(c + 484), guestHalf(c + 180), guestHalf(c + 186), guestHalf(c + 192), guestHalf(c + 184),
+				(int8_t)guestByte(c + 216), (int32_t)guestRead(c + 4060), (int32_t)guestRead(c + 4068), guestHalf(c + Throttle), guestHalf(c + Brake), guestHalf(c + Steering), guestRead(RaceClock));
+	if (rollTrials == 0)
+		return;
+	const float up = carUpY();
+	const uint32_t since = (uint32_t)handsSteps - roll.at;
+	const auto to = [&](RollTest::Phase p) { roll.phase = p, roll.at = (uint32_t)handsSteps; };
+	switch (roll.phase)
+	{
+		case RollTest::Waiting:
+			if (since > rate * 2)
+				to(RollTest::Pushing);
+			break;
+		case RollTest::Pushing:
+			if (up < -0.25f || since > rate * 2)
+				to(RollTest::Resting);
+			break;
+		case RollTest::Resting:
+			if (since > rate * 3)
+			{
+				roll.restUp = guestHalf(c + 184);
+				roll.presses = roll.accepted = roll.forced = 0, roll.steps = roll.contactA = roll.contactB = 0;
+				roll.startedAt = (uint32_t)handsSteps;
+				if (up > 0.7f && wheelsDown())
+				{
+					std::fprintf(stderr, "deadstation roll: trial %d: it came back by itself, up %.2f\n", roll.trial, up);
+					roll.trial++;
+					to(roll.trial >= rollTrials ? RollTest::Finished : RollTest::Waiting);
+				}
+				else
+					to(RollTest::Pressing);
+			}
+			break;
+		case RollTest::Pressing:
+		{
+			roll.steps++;
+			const int8_t kick = (int8_t)guestByte(c + Kick);
+			const bool a = guestHalf(c + 1916) != 0 && guestHalf(c + 1340) != 0, b = guestHalf(c + 1724) != 0 && guestHalf(c + 1532) != 0;
+			roll.contactA += a, roll.contactB += b;
+			if (kick == 1 && a)
+				roll.forced++;
+			if (kick == 2 && b)
+				roll.forced++;
+			if (kick != 0)
+				roll.accepted++;
+			const bool done = up > 0.7f && wheelsDown();
+			if (done || since > rate * 30)
+			{
+				std::fprintf(stderr, "deadstation roll: trial %d: rested at up %.2f; %s after %.2f s, %d presses, kick steps %d, of them with force %d; corners down A %.0f%% B %.0f%%; strength reached %d\n", roll.trial, roll.restUp / 4096.0,
+						done ? "upright" : "NOT UPRIGHT", (double)since / rate, roll.presses, roll.accepted, roll.forced, 100.0 * roll.contactA / std::max<uint32_t>(roll.steps, 1), 100.0 * roll.contactB / std::max<uint32_t>(roll.steps, 1), guestHalf(c + 4078));
+				roll.trial++;
+				to(roll.trial >= rollTrials ? RollTest::Finished : RollTest::Waiting);
+			}
+			break;
+		}
+		default:
+			break;
+	}
+}
+
+
+// ---- Medium High: a camera between Medium and Far, higher, looking down the road over the car ----
+//
+// The game's cameras are three rows of a table by its view (0 in the car, 1 Close, 2 Medium, 3 Far): how far above the car, how far behind it, and how far above it to look. So
+// this one is Medium's view with its own numbers in the table while the camera moves. The game's view stays 0 to 3, for all that goes by it; a row more in the pause menu's camera page
+// (0x80023B6C, one player) says which. Saved in its own file, as the game keeps no camera between runs of itself.
+constexpr uint32_t CameraMove = 0x8002D3F0, CameraMenuBack = 0x80024DD0, ViewChosen = 0x8005649C, ViewNow = 0x80060B60;
+constexpr uint32_t CameraAbove = 0x80060BD6 + 4, CameraBehind = 0x80060BDE + 4, CameraLook = 0x80060BE6 + 4;
+constexpr int16_t HighAbove = 232, HighBehind = 768, HighLook = 56;
+constexpr uint32_t MenuPadPressed = PadStates + 8, MenuDown = 0x4000, MenuUp = 0x1000;
+constexpr uint32_t MenuText = 0x80041038, MenuFarBack = 0x80024A94, MenuPanel = 0x8004322C, MenuPanelBack = 0x80024A08;
+constexpr int MenuRowHeight = 11, MenuHighlightTop = 97, MenuPanelBottom = 0x8E, MenuPanelRight = 0xC5;
+inline uint32_t menuBuffer(CPUState *cpu) { return guestByte(cpu->gpr[18] + 0x20000 - 25448); }
+void cameraMenu(CPUState *cpu)
+{
+	const uint32_t pressed = psx_mod_read_half(MenuPadPressed);
+	const int now = guestByte(ViewChosen);
+	// (the row before this press: the game has moved its view by one already)
+	int view = now;
+	if ((pressed & MenuDown) != 0)
+		view = (now + 3) % 4;
+	else if ((pressed & MenuUp) != 0)
+		view = (now + 1) % 4;
+	int row = view < 2 ? view : view == 2 ? (mediumHigh ? 3 : 2) : 4;
+	if ((pressed & MenuDown) != 0)
+		row = (row + 1) % 5;
+	else if ((pressed & MenuUp) != 0)
+		row = (row + 4) % 5;
+	const int chosen = row < 3 ? row : row == 3 ? 2 : 3;
+	const bool high = row == 3;
+	if (high != mediumHigh)
+	{
+		mediumHigh = high;
+		if (FILE *f = std::fopen(CameraFile, "wb"))
+		{
+			std::fputc(high ? 1 : 0, f);
+			std::fclose(f);
+		}
+	}
+	guestByte(ViewChosen) = (uint8_t)chosen;
+	psx_mod_write_half(ViewNow, (uint16_t)chosen);
+	cpu->gpr[6] = (uint32_t)chosen;
+	// (the highlight on its row, in the bar the page just placed by the game's view)
+	const uint32_t bar = cpu->gpr[29] + 24 + menuBuffer(cpu) * 28;
+	psx_mod_write_half(bar + 10, (uint16_t)(MenuHighlightTop + row * MenuRowHeight));
+}
+bool inCameraMove = false;
+int onCameraMove(CPUState *cpu, uint32_t)
+{
+	if (inCameraMove)
+		return 0;
+	const uint32_t ra = cpu->gpr[31];
+	if (ra == CameraMenuBack)
+		cameraMenu(cpu);
+	if (!mediumHigh || (uint16_t)cpu->gpr[6] != 2 || guestByte(Players) > 1)
+		return 0;
+	int16_t& above = guestHalf(CameraAbove), &behind = guestHalf(CameraBehind), &look = guestHalf(CameraLook);
+	const int16_t aboveWas = above, behindWas = behind, lookWas = look;
+	above = HighAbove, behind = HighBehind, look = HighLook;
+	inCameraMove = true;
+	psx_dispatch_call(cpu, CameraMove, ra);
+	inCameraMove = false;
+	above = aboveWas, behind = behindWas, look = lookWas;
+	cpu->gpr[31] = ra;
+	return 1;
+}
+// The pause menu's main page: eight rows from a table, RESUME, CAMERA, SOUND and its slider, MUSIC and its slider, RESTART, QUIT, and a cursor the game keeps in s4 by those eight. So a ninth is
+// here, HUD, after CAMERA: drawn in its place with those below it a row down, and the cursor on it held on CAMERA with a word here, the buttons seen first. Its own page takes the main page's
+// place, the game's rows not drawn and no button reaching them but Start.
+constexpr uint32_t PausePadsBack = 0x80023DD0, PauseTrackBack = 0x80024E48, MainRowBack = 0x80024074, MainPanelBack = 0x80024044, ConfirmPanelBack = 0x8002465C;
+constexpr uint32_t PadHeld = PadStates, PadPressed = PadStates + 8, PadReleased = PadStates + 10, MenuSound = 0x8003FB30;
+constexpr uint32_t PadStart = 0x800, PadCross = 0x40, PadCircle = 0x20, PadTriangle = 0x10, PadLeft = 0x8000, PadRight = 0x2000;
+constexpr int MainFirstRow = 0x44, MainHighlightTop = 67, MainPanelBottom = 0x9C, MainRows = 8, MainHudRow = 2;
+constexpr int HudLeft = 84, HudRight = 236, HudLabelX = 93, HudValueX = 196;
+bool onHudRow = false, onHudPage = false;
+int hudRow = 0;
+inline void saveHud()
+{
+	if (FILE *f = std::fopen(HudFile, "wb"))
+	{
+		const uint8_t kept[2] = { (uint8_t)hudOff, (uint8_t)(hudOff >> 8) };
+		std::fwrite(kept, 1, 2, f);
+		std::fclose(f);
+	}
+}
+inline void menuBeep(CPUState *cpu, uint32_t ra)
+{
+	cpu->gpr[4] = 0xA, cpu->gpr[5] = 0, cpu->gpr[6] = 0x3FFF, cpu->gpr[7] = 0x3FFF;
+	psx_dispatch_call(cpu, MenuSound, ra);
+	cpu->gpr[31] = ra;
+}
+// the pause menu's buttons, as they're read
+void pauseButtons(CPUState *cpu, uint32_t ra)
+{
+	uint32_t pressed = psx_mod_read_half(PadPressed);
+	uint32_t &cursor = cpu->gpr[20];		// (s4)
+	const uint32_t page = cpu->gpr[23];		// (s7: 0 the main page)
+	if (page != 0)
+	{
+		onHudRow = onHudPage = false;
+		return;
+	}
+	if ((pressed & PadStart) != 0)
+		onHudRow = onHudPage = false;
+	if (onHudPage)
+	{
+		bool beep = false;
+		if ((pressed & MenuDown) != 0)
+			hudRow = (hudRow + 1) % (HudParts + 1), beep = true;
+		if ((pressed & MenuUp) != 0)
+			hudRow = (hudRow + HudParts) % (HudParts + 1), beep = true;
+		if ((pressed & (PadCircle | PadTriangle)) != 0 || ((pressed & PadCross) != 0 && hudRow == HudParts))
+			onHudPage = false, beep = true;
+		else if ((pressed & (PadCross | PadLeft | PadRight)) != 0 && hudRow < HudParts)
+		{
+			hudOff ^= 1u << hudRow;
+			saveHud();
+			beep = true;
+		}
+		// (nothing but Start for the game)
+		psx_mod_write_half(PadPressed, (uint16_t)(pressed & PadStart));
+		psx_mod_write_half(PadHeld, (uint16_t)(psx_mod_read_half(PadHeld) & PadStart));
+		psx_mod_write_half(PadReleased, 0);
+		if (beep)
+			menuBeep(cpu, ra);
+		return;
+	}
+	if (onHudRow)
+	{
+		if ((pressed & MenuDown) != 0)
+			onHudRow = false;		// (the game goes on from CAMERA, to SOUND)
+		else if ((pressed & MenuUp) != 0)
+		{
+			onHudRow = false;
+			psx_mod_write_half(PadPressed, (uint16_t)(pressed & ~MenuUp));
+			menuBeep(cpu, ra);
+		}
+		else if ((pressed & PadCross) != 0)
+		{
+			onHudPage = true, hudRow = 0;
+			psx_mod_write_half(PadPressed, (uint16_t)(pressed & ~PadCross));
+			menuBeep(cpu, ra);
+		}
+		return;
+	}
+	if (cursor == 1 && (pressed & MenuDown) != 0)
+	{
+		onHudRow = true;
+		psx_mod_write_half(PadPressed, (uint16_t)(pressed & ~MenuDown));
+		menuBeep(cpu, ra);
+	}
+	else if (cursor == 2 && (pressed & MenuUp) != 0)
+	{
+		onHudRow = true, cursor = 1;
+		psx_mod_write_half(PadPressed, (uint16_t)(pressed & ~MenuUp));
+		menuBeep(cpu, ra);
+	}
+}
+// the highlight, where the game placed it by its own rows, before the frame's drawn
+void pauseHighlight(CPUState *cpu)
+{
+	if (cpu->gpr[23] == 2)
+		return;		// (the camera's page: cameraMenu)
+	const uint32_t bar = cpu->gpr[29] + 24 + menuBuffer(cpu) * 28;
+	if (cpu->gpr[23] != 0)
+	{
+		psx_mod_write_half(bar + 8, 0x7B);
+		return;
+	}
+	const int row = onHudRow ? MainHudRow : (int)cpu->gpr[20] + ((int)cpu->gpr[20] >= MainHudRow ? 1 : 0);
+	psx_mod_write_half(bar + 8, onHudPage ? (uint16_t)HudLeft : (uint16_t)0x7B);
+	psx_mod_write_half(bar + 10, (uint16_t)(MainHighlightTop + (onHudPage ? hudRow : row) * MenuRowHeight));
+}
+// the rows: on the main page HUD among them; on the camera page Medium High where Far was, Far a row down; on the HUD's page its own
+bool inMenuText = false;
+int onMenuText(CPUState *cpu, uint32_t)
+{
+	const uint32_t ra = cpu->gpr[31];
+	if (inMenuText)
+		return 0;
+	const uint32_t text = cpu->gpr[4], font = cpu->gpr[5], x = cpu->gpr[6], y = cpu->gpr[7];
+	const auto say = [&](uint32_t what, uint32_t atX, uint32_t atY) {
+		cpu->gpr[4] = what, cpu->gpr[5] = font, cpu->gpr[6] = atX, cpu->gpr[7] = atY;
+		psx_dispatch_call(cpu, MenuText, ra);
+	};
+	if (ra == MenuFarBack && pages.mediumHigh != 0)
+	{
+		inMenuText = true;
+		say(pages.mediumHigh, x, y);
+		say(text, x, y + MenuRowHeight);
+		inMenuText = false;
+		cpu->gpr[31] = ra;
+		return 1;
+	}
+	if (ra != MainRowBack || hudTextHud == 0)
+		return 0;
+	const int row = ((int)y - MainFirstRow) / MenuRowHeight;
+	inMenuText = true;
+	if (onHudPage)
+	{
+		if (row == 0)
+			for (int i = 0; i <= HudParts; i++)
+			{
+				const uint32_t atY = (uint32_t)(MainFirstRow + i * MenuRowHeight);
+				if (i == HudParts)
+					say(hudTextDone, HudLabelX, atY);
+				else
+				{
+					say(hudTexts[i], HudLabelX, atY);
+					say((hudOff >> i & 1) != 0 ? hudTextOff : hudTextOn, HudValueX, atY);
+				}
+			}
+	}
+	else
+	{
+		if (row == MainHudRow)
+			say(hudTextHud, x, (uint32_t)(MainFirstRow + MainHudRow * MenuRowHeight));
+		say(text, x, y + (row >= MainHudRow ? MenuRowHeight : 0));
+	}
+	inMenuText = false;
+	cpu->gpr[31] = ra;
+	return 1;
+}
+// and the panel behind them as long and wide as they want; a quad the game places, kept for its other pages as it was
+void onMenuPanel(CPUState *cpu, uint32_t)
+{
+	const uint32_t ra = cpu->gpr[31];
+	const bool cameraPage = ra == MenuPanelBack, mainPage = ra == MainPanelBack;
+	if (!cameraPage && !mainPage && ra != ConfirmPanelBack)
+		return;
+	const uint32_t panel = cpu->gpr[29] + 80 + menuBuffer(cpu) * 24;
+	const uint16_t left = (uint16_t)(mainPage && onHudPage ? HudLeft : 0x7B);
+	const uint16_t right = (uint16_t)(cameraPage ? MenuPanelRight + 24 : mainPage && onHudPage ? HudRight : MenuPanelRight);
+	psx_mod_write_half(panel + 8, left), psx_mod_write_half(panel + 16, left);
+	psx_mod_write_half(panel + 12, right), psx_mod_write_half(panel + 20, right);
+	if (cameraPage || mainPage)
+	{
+		const int bottom = cameraPage ? MenuPanelBottom + MenuRowHeight : onHudPage ? MainFirstRow + (HudParts + 1) * MenuRowHeight + 3 : MainPanelBottom + MenuRowHeight;
+		psx_mod_write_half(panel + 18, (uint16_t)bottom);
+		psx_mod_write_half(panel + 22, (uint16_t)bottom);
+	}
+}
+
+// ---- Out of a race: a cut to black, then the menu ----
+//
+// What the game did on its way back (its next screen going into VRAM as a frame still on show, in pieces) is not shown. The frames are painted black, and nothing is presented until the game draws
+// a frame of its next screen. (A loading that never draws one, past 30 seconds: shown again, and said.)
+constexpr uint32_t CdStop = 0x800449C4, RaceOverBackA = 0x80020F40, RaceOverBackB = 0x8002208C, PauseOpenBack = 0x80023C0C;
+bool leavingRace = false;
+uint32_t leavingBlanks = 0;
+void onCdStop(CPUState *cpu, uint32_t)
+{
+	const uint32_t ra = cpu->gpr[31];
+	if (ra == PauseOpenBack)
+		onHudRow = onHudPage = false;
+	if ((ra != RaceOverBackA && ra != RaceOverBackB) || blackFill == 0)
+		return;
+	const uint32_t at = blackFill & 0x1FFFFF;
+	guestWord(at, 3u << 24 | ((blackFill + 16) & 0xFFFFFF));
+	guestWord(at + 4, 0x02000000), guestWord(at + 8, 0), guestWord(at + 12, 240u << 16 | 512u);
+	guestWord(at + 16, 3u << 24 | 0xFFFFFF);
+	guestWord(at + 20, 0x02000000), guestWord(at + 24, 512u), guestWord(at + 28, 240u << 16 | 512u);
+	deadstation_scene_perspective(0);
+	psx_native_gpu_list(at);
+	leavingRace = true, leavingBlanks = 0;
 }
 
 // The camera, on a string behind the car: its rise when something's in the way of it, or fall when not (0x8002DCD4, what's in the way as a fraction,
@@ -3040,8 +3722,17 @@ void onAfterTheWait(CPUState *cpu, uint32_t)
 }
 // a pass with nothing to draw waits for its blank here (VSync(0), what it returns not looked at)
 constexpr uint32_t VSync = 0x8004663C, VSyncBack = 0x80020968;
+// The menus at 60. Their loop (0x80017B30) waits two blanks a frame, VSync(2): here one. What's counted in frames there keeps real time, on every second one: its counter (what blinks,
+// gp+1564) and what's counted on the pads (held, and how long since one was touched, for the demo).
+constexpr uint32_t MenuVSyncBack = 0x80017C6C, MenuPadsBack = 0x80017BA0, MenuFrames = Gp + 1564;
+bool menusAtSixty = true, menuTick = true;
 int onVSync(CPUState *cpu, uint32_t)
 {
+	if (menusAtSixty && cpu->gpr[31] == MenuVSyncBack)
+	{
+		cpu->gpr[4] = 0;
+		return 0;
+	}
 	if (cpu->gpr[31] != VSyncBack || !sixtyRunning)
 		return 0;
 	workEnded = Clock::now();
@@ -3149,6 +3840,35 @@ inline void logPlaces()
 int onPadsRead(CPUState *cpu, uint32_t)
 {
 	const uint32_t ra = cpu->gpr[31];
+	if (!inPads && ra == PausePadsBack)
+	{
+		inPads = true;
+		psx_dispatch_call(cpu, PadsRead, ra);
+		inPads = false;
+		cpu->gpr[31] = ra;
+		pauseButtons(cpu, ra);
+		return 1;
+	}
+	if (!inPads && menusAtSixty && ra == MenuPadsBack)
+	{
+		uint32_t counts[4][2];
+		for (uint32_t i = 0; i < 4; i++)
+			counts[i][0] = guestRead(PadStates + i * 24 + 16), counts[i][1] = guestRead(PadStates + i * 24 + 20);
+		inPads = true;
+		psx_dispatch_call(cpu, PadsRead, ra);
+		inPads = false;
+		cpu->gpr[31] = ra;
+		menuTick = !menuTick;
+		if (!menuTick)
+		{
+			guestWord(MenuFrames, guestRead(MenuFrames) - 1);
+			for (uint32_t i = 0; i < 4; i++)
+				for (uint32_t j = 0; j < 2; j++)
+					if (guestRead(PadStates + i * 24 + 16 + j * 4) == counts[i][j] + 1)
+						guestWord(PadStates + i * 24 + 16 + j * 4, counts[i][j]);
+		}
+		return 1;
+	}
 	if (inPads || !sixtyNow(ra, PadsBack))
 		return 0;
 	// (the replay camera's orbit, by the buttons, 16 a pass: it's run on after last pass's bookkeeping)
@@ -3201,6 +3921,17 @@ void onVBlank()
 {
 	logPlaces();
 	blanksSeen++;
+	if (leavingRace)
+	{
+		// (the black takes a blank or two to be on show; from there nothing else is)
+		if (++leavingBlanks > 2)
+			deadstation_no_present = 1;
+		if (leavingBlanks > 1800)
+		{
+			std::fprintf(stderr, "deadstation rallycross: 30 seconds out of a race with no next screen drawn: showing what there is\n");
+			leavingRace = false;
+		}
+	}
 	if (!stats)
 		return;
 	static float lastX[8], lastZ[8], travelled[8];
@@ -3295,6 +4026,7 @@ void emitFrame()
 	emitCarsAndLight();
 	if (tintWanted)
 		setTint(true);
+	addLampLight();
 	// what's added or blended, farthest first
 	if (!trackQuadsBlended.empty() && costStep < 5 && !without("dust"))
 	{
@@ -3320,6 +4052,67 @@ void emitFrame()
 // directly: no ordering table walked, nothing through the GPU's list. Anything else in the chain (a game state that does something new): the list, for that frame.
 std::vector<DeadstationTriangle> hudPolygons;
 std::vector<DeadstationGlow> hudLines;
+bool hudLog = false;
+// A frame that has to go by the list (the pause menu's panel): the parts turned off taken out of it for that frame, put back as the next is told. (The game's records outlive a frame, some of them.)
+std::vector<std::pair<uint32_t, uint32_t>> hudTakenOut;
+void hudListRestore()
+{
+	for (const auto& taken : hudTakenOut)
+		if (guestRead(0x80000000u | taken.first) == 0)
+			guestWord(0x80000000u | taken.first, taken.second);
+	hudTakenOut.clear();
+}
+void hudListHide(uint32_t from)
+{
+	if (hudOff == 0)
+		return;
+	int32_t ox = 0, oy = 0;
+	psx_gpu_draw_offset(&ox, &oy);
+	const auto coordinate = [](int v) { return (int)(int16_t)((uint32_t)v << 5) >> 5; };
+	uint32_t at = from & 0x1FFFFF;
+	for (int n = 0; n < 4000 && at != 0x1FFFFF; n++)
+	{
+		const uint32_t tag = ramWord(at), len = tag >> 24;
+		for (uint32_t w = 0; w < len;)
+		{
+			const uint32_t base = at + 4 + w * 4, word = ramWord(base), code = word >> 24;
+			uint32_t size = 0;
+			int mx = 0, my = 0;
+			if (code >= 0x64 && code < 0x68)
+			{
+				const uint32_t place = ramWord(base + 4), wh = ramWord(base + 12);
+				size = 4, mx = coordinate((int)(place & 0x7FF)) + (int)(wh & 0xFFFF) / 2, my = coordinate((int)((place >> 16) & 0x7FF)) + (int)(wh >> 16) / 2;
+			}
+			else if (code >= 0x2C && code < 0x30)
+			{
+				size = 9;
+				for (uint32_t j = 0; j < 4; j++)
+				{
+					const uint32_t place = ramWord(base + 4 + j * 8);
+					mx += coordinate((int)(place & 0x7FF)), my += coordinate((int)((place >> 16) & 0x7FF));
+				}
+				mx /= 4, my /= 4;
+			}
+			else
+			{
+				// (only what the HUD is made of is looked at; a length known, past it)
+				const uint32_t known = code >= 0x28 && code < 0x2C ? 5 : code >= 0x60 && code < 0x64 ? 3 : code >= 0x40 && code < 0x44 ? 3 : (code >= 0xE1 && code <= 0xE6) || code == 0 ? 1 : 0;
+				if (known == 0)
+					break;
+				w += known;
+				continue;
+			}
+			if (hudHidden(mx - ox, my - oy))
+				for (uint32_t j = 0; j < size; j++)
+				{
+					hudTakenOut.emplace_back(base + j * 4, ramWord(base + j * 4));
+					guestWord(0x80000000u | (base + j * 4), 0);
+				}
+			w += size;
+		}
+		at = tag & 0x1FFFFF;
+	}
+}
 bool emitHud(uint32_t from)
 {
 	static const bool off = std::getenv("DEADSTATION_RALLYCROSS_HUDLIST") != nullptr;
@@ -3363,6 +4156,13 @@ bool emitHud(uint32_t from)
 				corner(ramWord(base + 4), x, y);
 				const uint32_t texture = ramWord(base + 8), size = ramWord(base + 12);
 				const float wide = (float)(size & 0xFFFF), tall = (float)(size >> 16);
+				if (hudLog)
+					std::fprintf(stderr, "deadstation hud: sprite %.0f %.0f size %.0f %.0f\n", x - (float)ox, y - (float)oy, wide, tall);
+				if (hudHidden((int)(x - (float)ox + wide / 2), (int)(y - (float)oy + tall / 2)))
+				{
+					w += 4;
+					continue;
+				}
 				const int u = (int)(texture & 255), v = (int)((texture >> 8) & 255);
 				const uint16_t u1 = (uint16_t)std::min(u + (int)wide, 255), v1 = (uint16_t)std::min(v + (int)tall, 255);
 				DeadstationTriangle t {};
@@ -3389,6 +4189,14 @@ bool emitHud(uint32_t from)
 				{
 					corner(ramWord(base + Place[j]), xs[j], ys[j]);
 					uvs[j] = (uint16_t)ramWord(base + Texture[j]);
+				}
+				const float middleX = (xs[0] + xs[1] + xs[2] + xs[3]) / 4 - (float)ox, middleY = (ys[0] + ys[1] + ys[2] + ys[3]) / 4 - (float)oy;
+				if (hudLog)
+					std::fprintf(stderr, "deadstation hud: quad at %.0f %.0f\n", middleX, middleY);
+				if (hudHidden((int)middleX, (int)middleY))
+				{
+					w += 9;
+					continue;
 				}
 				const uint16_t own = (uint16_t)((ramWord(base + 16) >> 16) & 0x1FF);
 				DeadstationTriangle t {};
@@ -3497,10 +4305,14 @@ bool emitSplit()
 }
 uint32_t drawListFrom(uint32_t ot)
 {
+	hudListRestore();
 	if (!frameDrawn)
 		return ot;
 	frameDrawn = false;
-	return emitHud(trackOt) ? 0 : trackOt;
+	if (emitHud(trackOt))
+		return 0;
+	hudListHide(trackOt);
+	return trackOt;
 }
 
 // the game draws the frame it built
@@ -3509,6 +4321,8 @@ void onBeforeDrawOTag()
 	// (a race's frame: the track was walked; no car need be in view, from inside one looking away)
 	const bool race = building.objects[0].present || (fullDetail && trackActive);
 	deadstation_game_frames++;
+	if (leavingRace && !race)
+		leavingRace = false;
 	if (!pages.built)
 		buildPages();
 	if (!race)
@@ -3585,16 +4399,70 @@ void onTriangleSource(uint32_t addr)
 	}
 }
 
+// DEADSTATION_RALLYCROSS_FRAMES (tests): each frame the game hands the GPU, who from, and what's in it
+uint32_t framesLogged = 0;
+void onFrameLog(CPUState *cpu, uint32_t)
+{
+	uint32_t at = cpu->gpr[4] & 0x1FFFFC, tiles = 0, blackTiles = 0, fills = 0, sprites = 0, polys = 0, others = 0, nodes = 0;
+	uint32_t firstBlack[4] = {};
+	while (nodes < 40000)
+	{
+		const uint32_t word = guestRead(0x80000000u | at), length = word >> 24;
+		nodes++;
+		if (length != 0)
+		{
+			const uint32_t command = guestRead(0x80000000u | (at + 4));
+			const uint32_t op = command >> 24;
+			if (op == 0x02)
+				fills++;
+			else if ((op & 0xE0) == 0x60)
+			{
+				const bool textured = (op & 4) != 0;
+				if (textured)
+					sprites++;
+				else
+				{
+					tiles++;
+					if ((command & 0xFFFFFF) == 0)
+					{
+						if (blackTiles == 0)
+						{
+							firstBlack[0] = guestRead(0x80000000u | (at + 8));
+							firstBlack[1] = op == 0x60 ? guestRead(0x80000000u | (at + 12)) : 0;
+						}
+						blackTiles++;
+					}
+				}
+			}
+			else if ((op & 0xE0) == 0x20 || (op & 0xE0) == 0x30)
+				polys++;
+			else
+				others++;
+		}
+		const uint32_t next = word & 0xFFFFFF;
+		if (next == 0xFFFFFF)
+			break;
+		at = next & 0x1FFFFC;
+	}
+	std::fprintf(stderr, "deadstation frame %u: from %08X sp %08X blanks %u: fills %u tiles %u black %u (%08X %08X) sprites %u polys %u others %u nodes %u\n", framesLogged++, cpu->gpr[31], cpu->gpr[29], guestRead(BlankCount), fills, tiles, blackTiles, firstBlack[0], firstBlack[1], sprites, polys, others, nodes);
+}
+
 struct Registration
 {
 	Registration()
 	{
+		if (std::getenv("DEADSTATION_RALLYCROSS_FRAMES") != nullptr)
+			psx_mod_register_function_entry_plugin(Id, 0x800489F8, onFrameLog);
 		psx_mod_register_function_filter_plugin(Id, Height, onHeightNative);
 		psx_mod_register_function_filter_plugin(Id, GridSample, onGridSample);
 		psx_mod_register_function_entry_plugin(Id, RaceLoad, onRaceLoad);
 		psx_mod_register_function_entry_plugin(Id, ImageUpload, onImageUpload);
 		stats = std::getenv("DEADSTATION_RALLYCROSS_STATS") != nullptr;
 		autopilot = std::getenv("DEADSTATION_RALLYCROSS_AUTOPILOT") != nullptr;
+		hudLog = std::getenv("DEADSTATION_RALLYCROSS_HUDLOG") != nullptr;
+		menusAtSixty = std::getenv("DEADSTATION_RALLYCROSS_MENU30") == nullptr;
+		if (const char *kick = std::getenv("DEADSTATION_RALLYCROSS_KICK"))
+			kickPercent = std::atoi(kick);
 		secondPadForTests = std::getenv("DEADSTATION_RALLYCROSS_SECOND_PAD") != nullptr;
 		// (=N: from that step on, for a whole race: what only exists moving doesn't show on a held view)
 		if (const char *cost = std::getenv("DEADSTATION_RALLYCROSS_COST"))
@@ -3678,6 +4546,36 @@ struct Registration
 				(off == nullptr || std::strstr(off, "pad") == nullptr))
 			psx_mod_register_function_filter_plugin(Id, PadRead, onPadRead);
 		psx_mod_register_function_filter_plugin(Id, AiHands, onAiHands);
+		psx_mod_register_function_filter_plugin(Id, CameraMove, onCameraMove);
+		psx_mod_register_function_filter_plugin(Id, MenuText, onMenuText);
+		psx_mod_register_function_entry_plugin(Id, MenuPanel, onMenuPanel);
+		psx_mod_register_function_entry_plugin(Id, CdStop, onCdStop);
+		if (const char *drive = std::getenv("DEADSTATION_RALLYCROSS_DRIVE"))
+		{
+			for (const char *at = drive; *at != 0;)
+			{
+				float from = 0, to = 0;
+				unsigned mask = 0;
+				int used = 0;
+				if (std::sscanf(at, "%f-%f:%x%n", &from, &to, &mask, &used) != 3)
+					break;
+				handsDrive.push_back({ from, to, (uint16_t)mask });
+				at += used;
+				if (*at == ',')
+					at++;
+			}
+			handsTest = true;
+		}
+		if (const char *trials = std::getenv("DEADSTATION_RALLYCROSS_ROLL"))
+		{
+			rollTrials = std::atoi(trials);
+			handsTest = rollTrials > 0 || handsTest;
+		}
+		if (handsTest && !sixty)
+		{
+			psx_mod_register_function_filter_plugin(Id, PhysicsStep, onPhysicsStep);
+			psx_mod_register_function_filter_plugin(Id, Brains, onBrains);
+		}
 	}
 } registration;
 }
