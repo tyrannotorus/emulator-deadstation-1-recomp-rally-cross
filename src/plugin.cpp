@@ -101,12 +101,12 @@ inline float smooth01(float lo, float hi, float v)
 inline float beamAt(const CarLight& c, float x, float y, float z)
 {
 	const float dx = x - c.x, dy = y - c.y, dz = z - c.z, along = dx * c.fx + dz * c.fz, across = std::fabs(dx * c.rx + dz * c.rz);
-	if (along <= 40.f || along >= BeamReach)
+	if (along <= 150.f || along >= BeamReach)
 		return 0;
 	const float left = 1.f - along / BeamReach, width = 70.f + along * 0.42f;
 	const float shape = 1.f - smooth01(width * 0.4f, width, across), spill = 0.24f * (1.f - smooth01(0.f, width * 1.5f, across));
 	const float high = std::clamp(1.f - std::fabs(dy - c.fy * along) / 450.f, 0.f, 1.f);
-	return (shape + spill) * smooth01(40.f, 160.f, along) * left * std::sqrt(left) * high;
+	return (shape + spill) * smooth01(150.f, 430.f, along) * left * std::sqrt(left) * high;
 }
 
 struct Vec
@@ -1177,7 +1177,7 @@ void addCones()
 {
 	if (look.haze <= 0)
 		return;
-	static constexpr float Along[7] = { 20, 90, 220, 420, 720, 1120, 1700 };
+	static constexpr float Along[7] = { 32, 90, 220, 420, 720, 1120, 1700 };	// (from the lamp, past the longest of the cars' noses, 162)
 	for (int i = 0; i < carLightCount; i++)
 	{
 		const CarLight& c = carLights[i];
@@ -1556,7 +1556,7 @@ struct LampCorners { uint32_t triangle; uint8_t w[3]; };
 struct LampLight { uint32_t object; float x, y, z, flame, aim; std::vector<LampCorners> lit; };
 std::vector<LampLight> lampLights;
 const std::vector<DeadstationWorldTriangle> *lampMesh = nullptr;
-constexpr float LampReach = 2300.f, LampFlameR = 150.f, LampFlameG = 65.f, LampFlameB = 11.f;
+constexpr float LampReach = 2600.f, LampFlameR = 170.f, LampFlameG = 79.f, LampFlameB = 17.f;
 constexpr int LampKindFlame = 1;
 void learnLampLight(const std::vector<DeadstationWorldTriangle>& mesh, uint32_t index)
 {
@@ -1603,7 +1603,7 @@ void learnLampLight(const std::vector<DeadstationWorldTriangle>& mesh, uint32_t 
 				if (faces < -0.05f)
 					continue;
 				const float left = 1.f - far / LampReach;
-				corners.w[j] = (uint8_t)std::clamp(left * left * std::sqrt(left) * (0.3f + 0.7f * std::max(faces, 0.f)) * 255.f, 0.f, 255.f);
+				corners.w[j] = (uint8_t)std::clamp(left * left * (0.35f + 0.65f * std::max(faces, 0.f)) * 255.f, 0.f, 255.f);
 				any = any || corners.w[j] != 0;
 			}
 			if (any)
@@ -2575,6 +2575,28 @@ int onCarPolygons(CPUState *cpu, uint32_t)
 	std::vector<DeadstationTriangle>& solid = carSolid[currentCarId], &blended = carBlended[currentCarId];
 	std::vector<DeadstationGlow>& depths = carDepths[currentCarId];
 	const uint32_t count = rb(order);
+	// (DEADSTATION_RALLYCROSS_STATS: how long each model is, once)
+	static uint32_t modelsTold[8] = {};
+	if (stats && modelsTold[currentCarId & 7] != polygons)
+	{
+		modelsTold[currentCarId & 7] = polygons;
+		float zLo = 1e9f, zHi = -1e9f, xHi = 0, yLo = 1e9f;
+		for (uint32_t i = 0; i < count; i++)
+		{
+			const uint32_t index = rb(order + 1 + i), part = parts + index * 44;
+			if (index < 12)
+				continue;
+			const uint32_t lod = ramByte(part + 24), n = (uint16_t)ramHalf(part + lod * 2 + 16), first = (uint16_t)ramHalf(part + lod * 2 + 20);
+			for (uint32_t q = 0; q < n; q++)
+				for (uint32_t j = 0; j < 4; j++)
+				{
+					const uint32_t at = polygons + (first + q) * 44 + 12 + j * 8;
+					const float vx = ramHalf(at), vy = ramHalf(at + 2), vz = ramHalf(at + 4);
+					zLo = std::min(zLo, vz), zHi = std::max(zHi, vz), xHi = std::max(xHi, std::fabs(vx)), yLo = std::min(yLo, vy);
+				}
+		}
+		std::fprintf(stderr, "deadstation rallycross: car %d model: nose %.0f tail %.0f half width %.0f top %.0f\n", currentCarId, zHi, zLo, xHi, yLo);
+	}
 	for (uint32_t i = 0; i < count; i++)
 	{
 		const uint32_t index = rb(order + 1 + i), part = parts + index * 44;

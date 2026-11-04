@@ -18,6 +18,9 @@ layout(location = 0) out vec2 vAtlas;
 layout(location = 1) out mediump vec4 vMod;		// the corner's colour, and how much of the fog is in front of it
 invariant gl_Position;
 
+// Where a beam's light begins, from the car's middle: at its nose, the lamps being up there, and up to its full strength a little way on the road.
+const float BeamFrom = 150.0, BeamFull = 430.0;
+
 // A pair of headlights at this corner, as world_lit.frag has them for each pixel: for what's small and many (fronds, spectators) or far from the camera's interest (the other car's)
 // there's no second drawing of the polygons for it. What the pixel's version costs a frame in a jungle, this costs next to nothing. A big polygon has few corners for a narrow beam to fall on, one
 // lit and the others not making a hard bright triangle of it: so the beam's blurred by the polygon's own size (blur, half its longest edge) and dimmed to keep its light the same.
@@ -26,9 +29,9 @@ float beamAt(const vec4 along, const vec4 across, const vec4 height, const vec4 
 	const float a = dot(along, p), c = abs(dot(across, p));
 	const float left = max(1.0 - a / (2000.0 + blur), 0.0);
 	const float sharp = 70.0 + max(a, 0.0) * 0.42, width = sharp + blur;
-	if (left <= 0.0 || a <= -40.0 - blur || c >= width * 1.5)
+	if (left <= 0.0 || a <= BeamFrom - blur || c >= width * 1.5)
 		return 0.0;
-	const float start = smoothstep(-40.0 - blur, 300.0 + blur, a);
+	const float start = smoothstep(BeamFrom - blur, BeamFull + blur, a);
 	const float reach = left * sqrt(left);
 	const float lamp = 50.0 * max(1.0 - a / 500.0, 0.0);
 	const float shape = 1.0 - smoothstep(width * 0.4, width, abs(c - lamp));
